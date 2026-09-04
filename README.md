@@ -2,8 +2,8 @@
 
 A Rust + [GPUI](https://www.gpui.rs/) port of [`zerebos/Hangman`](https://github.com/zerebos/Hangman),
 a 2015 Java/Swing hangman game. Same rules, same word lists, same artwork, same
-layout and the same (slightly unhinged) alert messages — rebuilt with
-[gpui-kit](https://gpui-kit.com) instead of Swing.
+layout, the same two sound cues and the same (slightly unhinged) alert messages
+— rebuilt with [gpui-kit](https://gpui-kit.com) instead of Swing.
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -23,9 +23,9 @@ layout and the same (slightly unhinged) alert messages — rebuilt with
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
 engine (with 26 unit tests), and [`src/ui/`](src/ui/) is everything GPUI. The
-word lists and the original's gallows artwork live in [`assets/`](assets/) and
-are compiled into the binary, so there is nothing to install next to the
-executable.
+word lists, the original's gallows artwork and its two mp3 cues live in
+[`assets/`](assets/) and are compiled into the binary, so there is nothing to
+install next to the executable.
 
 ## Building and running
 
@@ -61,6 +61,44 @@ You will most likely already have `libfontconfig-dev` and `libfreetype-dev`; if
 not, add them too. Wayland and Vulkan are `dlopen`ed at run time rather than
 linked, so they are only needed to actually display the window.
 
+## Sound: the `sound` feature
+
+The original played `win.mp3` when you guessed the word and `loss.mp3` when the
+drawing was finished. Both are ported, but behind a cargo feature named `sound`
+that is **off by default**, so a plain `cargo run` needs nothing new — it builds
+and runs exactly as it did before, just silently.
+
+To turn the cues on:
+
+```sh
+cargo run --features sound
+```
+
+The reason it is opt-in is that on Linux it makes the **ALSA headers a
+build-time requirement**. The feature pulls in [rodio], which pulls in `cpal`,
+whose `alsa-sys` build script shells out to `pkg-config` for them. If they are
+missing that build script *panics*, and cargo fails the **whole crate** — not
+just the audio — so `cargo build`, `cargo test` and even `cargo check` would
+stop working for anyone who only cares about the game. Hence the flag. Install
+them first:
+
+```sh
+sudo apt install -y libasound2-dev      # Debian / Ubuntu
+sudo dnf install -y alsa-lib-devel      # Fedora
+```
+
+On a PipeWire-only machine this still works at run time: `cpal` has no PipeWire
+backend, but PipeWire's ALSA compatibility plugin (`pipewire-alsa`) is installed
+by default on every mainstream distro that ships PipeWire, and rodio goes
+through that. The headers are needed to *build* either way.
+
+If the feature is enabled but no usable output device is found, the game says so
+once on stderr and then just plays silently — it never fails to start. (The
+message may be preceded by several lines of diagnostics from libasound itself;
+those come from the C library, not from the game.)
+
+[rodio]: https://crates.io/crates/rodio
+
 ## Controls
 
 | Action | How |
@@ -92,12 +130,15 @@ new word list to start over.
 - **The menu bar became a toolbar.** gpui-kit has no menu-bar component, so the
   original's `Game` menu (Open File…, Change Word, Difficulty ▸, Exit) is a button
   strip under the title bar. `Ctrl+O` and `Ctrl+N` still work.
-- **Sounds are not ported.** The original played `win.mp3` / `loss.mp3` through
-  JavaFX. Adding an audio dependency for two cues was not worth it.
+- **Sound is opt-in.** The original played `win.mp3` / `loss.mp3` through JavaFX,
+  unconditionally. The same two cues are here, but only when built with
+  `--features sound`, because the audio dependency makes the ALSA headers a
+  build-time requirement on Linux. See [Sound: the `sound` feature](#sound-the-sound-feature).
 - **A game-result bug is fixed.** On the *final* word of a match, the original
   only ever announced the match result and silently skipped the win/loss message
   (and the sound) for that game. Here both fire: the alert line shows
-  `You WIN!` / `Bring Add/Drop Form!` and the footer shows the match summary.
+  `You WIN!` / `Bring Add/Drop Form!`, the cue plays, and the footer shows the
+  match summary.
 - **The window resizes.** The original was a fixed, non-resizable 800×400.
 - **Small addition:** a muted `Word n of 10` counter next to the score, so you can
   tell how much of a match is left.

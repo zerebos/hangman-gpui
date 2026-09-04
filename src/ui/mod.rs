@@ -16,6 +16,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::audio::Audio;
 use crate::game::{Difficulty, Game, GameResult, GuessResult, MatchOutcome};
 use gallows::gallows;
 
@@ -77,6 +78,10 @@ pub struct HangmanView {
     /// element has to own a focus handle and actually be focused before typing
     /// a letter can reach us.
     focus_handle: FocusHandle,
+    /// The win/loss cues. Without the `sound` feature this is a zero-sized
+    /// no-op, so the calls below need no `#[cfg]` of their own. It has to be
+    /// owned here rather than created per clip: it holds the output device open.
+    audio: Audio,
 }
 
 impl HangmanView {
@@ -85,6 +90,7 @@ impl HangmanView {
             game: Game::new(Difficulty::default()),
             alert: None,
             focus_handle: cx.focus_handle(),
+            audio: Audio::new(),
         }
     }
 
@@ -101,8 +107,16 @@ impl HangmanView {
             // The original cleared the line on any ordinary guess, and only the
             // guess that ends the game leaves a message behind.
             _ => match outcome.game {
-                Some(GameResult::Won) => Some(Alert::good(GAME_WON)),
-                Some(GameResult::Lost) => Some(Alert::bad(GAME_LOST)),
+                // The two moments the Java played a cue. Giving up is handled
+                // in `give_up`, which stays silent just as the original did.
+                Some(GameResult::Won) => {
+                    self.audio.play_win();
+                    Some(Alert::good(GAME_WON))
+                }
+                Some(GameResult::Lost) => {
+                    self.audio.play_loss();
+                    Some(Alert::bad(GAME_LOST))
+                }
                 None => None,
             },
         };

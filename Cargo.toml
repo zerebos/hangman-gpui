@@ -3,6 +3,18 @@ name = "hangman-gpui"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# The original's win.mp3 / loss.mp3 cues. Off by default because enabling it
+# makes the ALSA headers a build-time requirement on Linux (see the README).
+sound = ["dep:rodio"]
+
 [dependencies]
 gpui-kit = "0.6.0"
 rand = "0.10"
+# `playback` pulls in cpal; `mp3` decodes via symphonia. The rest of rodio's
+# default features (recording, mp4, vorbis, flac, wav) are not wanted here.
+rodio = { version = "0.22", default-features = false, features = [
+    "playback",
+    "mp3",
+], optional = true }
