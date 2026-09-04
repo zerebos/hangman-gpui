@@ -1,0 +1,4 @@
+# gpui-pre (pulled in by gpui-kit) uses `std::hint::cold_path()`, which is not
+# stable on rustc 1.94.1. The beta channel has it, so pin the whole workspace.
+[toolchain]
+channel = "beta"
