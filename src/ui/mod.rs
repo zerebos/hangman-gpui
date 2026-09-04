@@ -368,7 +368,14 @@ impl HangmanView {
                     ),
             )
             .child(
-                h_flex().pr_2().child(
+                // `occlude` keeps this press away from the title bar behind it.
+                // gpui-kit's `TitleBar` starts an interactive window move from
+                // its own bubble-phase `on_mouse_down`/`on_mouse_move`, and
+                // `Button` only stops propagation while it is loading. Without
+                // this, a click that drifts even a pixel is taken by the window
+                // manager as a window drag, the button never sees mouse-up, and
+                // the toggle silently does nothing.
+                h_flex().pr_2().occlude().child(
                     Button::new("theme-toggle")
                         .ghost()
                         .small()

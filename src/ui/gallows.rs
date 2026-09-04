@@ -1,6 +1,6 @@
 //! The gallows picture that fills the right-hand panel.
 //!
-//! This is the original Java game's artwork: a `pole.jpg` gallows with six
+//! This is the original Java game's artwork: a `pole.png` gallows with six
 //! victim frames stacked on top of it, one per wrong guess. The images are
 //! baked into the binary, so there is still nothing to install alongside the
 //! executable.
@@ -12,9 +12,8 @@ use gpui_kit::*;
 
 /// The gallows backdrop, drawn behind every stage.
 ///
-/// The stage panel it sits on is themed, so this wants to be a transparent
-/// PNG. It is still the original opaque `pole.jpg`: swap the filename (and
-/// `jpeg` for `png`) once `pole.png` lands and nothing else has to change.
+/// The stage panel it sits on is themed, so this is a transparent PNG: the
+/// panel's own colour shows through the artwork in both light and dark.
 static GALLOWS: LazyLock<Arc<Image>> =
     LazyLock::new(|| png(include_bytes!("../../assets/images/pole.png")));
 
