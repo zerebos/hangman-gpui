@@ -1,7 +1,7 @@
 //! The GPUI user interface: one window, laid out like the Swing original.
 //!
 //! The window is a left game column (title, alert, score, word, letter grid)
-//! next to a right panel holding the gallows drawing. The original's `Game`
+//! next to a right panel holding the gallows picture. The original's `Game`
 //! menu becomes a toolbar strip under the title bar, because gpui-kit has no
 //! menu-bar component.
 
@@ -417,14 +417,19 @@ impl HangmanView {
 
     fn render_gallows_panel(&self, cx: &Context<Self>) -> impl IntoElement {
         div()
-            .w(px(300.))
+            // Wide enough for the 300px artwork plus the padding on both sides.
+            .w(px(324.))
             .h_full()
             .p_3()
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .child(gallows(self.game.wrong_guesses(), cx))
+            // The gallows art is an opaque JPEG, so a themed background would
+            // only show as a border around a white rectangle. Framing it in
+            // white instead makes it read as a picture; drop this line once the
+            // gallows is a transparent PNG.
+            .bg(white())
+            .child(gallows(self.game.wrong_guesses()))
     }
 }
 
