@@ -1,6 +1,6 @@
 //! The gallows picture that fills the right-hand panel.
 //!
-//! This is the original Java game's artwork: a `pole.jpg` gallows with six
+//! This is the original Java game's artwork: a `pole.png` gallows with six
 //! victim frames stacked on top of it, one per wrong guess. The images are
 //! baked into the binary, so there is still nothing to install alongside the
 //! executable.
@@ -12,10 +12,10 @@ use gpui_kit::*;
 
 /// The gallows backdrop, drawn behind every stage.
 ///
-/// It is an opaque JPEG: replacing this one line with a transparent PNG is all
-/// it takes to drop the white background over in `render_gallows_panel`.
+/// The stage panel it sits on is themed, so this is a transparent PNG: the
+/// panel's own colour shows through the artwork in both light and dark.
 static GALLOWS: LazyLock<Arc<Image>> =
-    LazyLock::new(|| jpeg(include_bytes!("../../assets/images/pole.jpg")));
+    LazyLock::new(|| png(include_bytes!("../../assets/images/pole.png")));
 
 /// The six victim frames, in the order the original showed them.
 static STAGES: LazyLock<[Arc<Image>; 6]> = LazyLock::new(|| {
@@ -74,10 +74,6 @@ pub fn gallows(stage: usize) -> impl IntoElement {
 /// cache, keyed on their content hash.
 fn embedded(format: ImageFormat, bytes: &[u8]) -> Arc<Image> {
     Arc::new(Image::from_bytes(format, bytes.to_vec()))
-}
-
-fn jpeg(bytes: &[u8]) -> Arc<Image> {
-    embedded(ImageFormat::Jpeg, bytes)
 }
 
 fn png(bytes: &[u8]) -> Arc<Image> {
