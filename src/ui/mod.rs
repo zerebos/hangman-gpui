@@ -8,6 +8,8 @@
 
 mod gallows;
 
+use std::time::Duration;
+
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::{
@@ -57,6 +59,68 @@ const WORD_CELL_HEIGHT: Pixels = px(38.);
 const WORD_GAP: Pixels = px(10.);
 /// The rule drawn under each guessable character.
 const WORD_RULE_HEIGHT: Pixels = px(3.);
+
+// ------------------------------------------------------------------ motion
+//
+// Everything below is UI feel only: no timing here can change a rule, a score
+// or a layout dimension. Each effect is a one-shot animation whose end state is
+// exactly how the element looks at rest, so a finished animation leaves the
+// window looking as it did before any of this existed.
+//
+// None of them checks a motion preference, on purpose: `with_animation` already
+// honours `App::reduce_motion` for us, rendering a one-shot animation's end
+// state and scheduling no frames at all
+// (`gpui-pre-0.3.3/src/elements/animation.rs:406-419`).
+
+/// How long the word row's wrong-guess shake lasts.
+const SHAKE: Duration = Duration::from_millis(320);
+/// How far the shake throws the row, at its widest.
+const SHAKE_DISTANCE: f32 = 5.;
+/// How many sine cycles it runs through. A multiple of a half cycle, so the
+/// wave lands back on zero and the row ends exactly where it started.
+const SHAKE_CYCLES: f32 = 2.5;
+
+/// How long one letter takes to appear in the win reveal, in seconds.
+const REVEAL_FADE: f32 = 0.26;
+/// How far apart the letters start, in seconds. This is the stagger.
+const REVEAL_STEP: f32 = 0.055;
+/// How far below its place a letter starts the reveal.
+const REVEAL_RISE: f32 = 7.;
+
+/// One wrong-guess pip.
+const PIP_SIZE: Pixels = px(9.);
+/// How far past the pip its pulse expands before fading out.
+const PIP_HALO: Pixels = px(7.);
+/// How solid that halo is when it starts.
+const PIP_HALO_ALPHA: f32 = 0.45;
+/// How long the pulse takes.
+const PIP_PULSE: Duration = Duration::from_millis(420);
+
+/// The word row's horizontal offset, `delta` of the way through a shake.
+///
+/// A sine wave damped to nothing, so it starts and ends at zero however it is
+/// sampled — a shake that stopped off-centre would move the row for good.
+fn shake_offset(delta: f32) -> f32 {
+    SHAKE_DISTANCE * (1. - delta) * (delta * SHAKE_CYCLES * std::f32::consts::TAU).sin()
+}
+
+/// How long the whole reveal animation of the letter at `index` runs: its share
+/// of the stagger, and then its own fade.
+fn reveal_span(index: usize) -> Duration {
+    Duration::from_secs_f32(REVEAL_STEP * index as f32 + REVEAL_FADE)
+}
+
+/// How far the letter at `index` is through its own fade, `delta` of the way
+/// through [`reveal_span`].
+///
+/// The animation runs on a linear easing, so `delta` times the span is elapsed
+/// seconds; the letter sits still until its slot comes round and is finished at
+/// `delta == 1`, whatever its index.
+fn reveal_progress(index: usize, delta: f32) -> f32 {
+    let delay = REVEAL_STEP * index as f32;
+    let span = delay + REVEAL_FADE;
+    ((delta * span - delay) / REVEAL_FADE).clamp(0., 1.)
+}
 
 actions!(hangman, [OpenWordList, ChangeWord]);
 
@@ -502,7 +566,10 @@ impl HangmanView {
     }
 
     /// One character of the word: the glyph, and the rule it sits on.
-    fn render_word_cell(&self, cell: Cell, cx: &Context<Self>) -> impl IntoElement {
+    ///
+    /// `index` is the cell's place in the word, which is also its place in the
+    /// stagger when the word is revealed on a win.
+    fn render_word_cell(&self, index: usize, cell: Cell, cx: &Context<Self>) -> impl IntoElement {
         // On a loss every cell is revealed, so mark the ones the player never
         // actually guessed — that is the answer, not their work.
         let missed = self.game.game_result() == Some(GameResult::Lost)
@@ -522,6 +589,15 @@ impl HangmanView {
             cx.theme().muted_foreground.alpha(0.4)
         };
 
+        let glyph = h_flex()
+            .h(WORD_CELL_HEIGHT)
+            .justify_center()
+            .text_size(px(30.))
+            .font_bold()
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_color(glyph_color)
+            .when(cell.revealed, |this| this.child(cell.value.to_string()));
+
         v_flex()
             .items_center()
             .gap_1p5()
@@ -532,16 +608,34 @@ impl HangmanView {
             } else {
                 WORD_CELL_WIDTH / 2.
             })
-            .child(
-                h_flex()
-                    .h(WORD_CELL_HEIGHT)
-                    .justify_center()
-                    .text_size(px(30.))
-                    .font_bold()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_color(glyph_color)
-                    .when(cell.revealed, |this| this.child(cell.value.to_string())),
-            )
+            .child(if self.game.is_won() {
+                // Won: the letters resolve one after another instead of the
+                // whole word landing at once. Two things arm this. The cells
+                // only carry an animation while the game is won, so losing the
+                // element between games is what lets it play again; and the id
+                // carries the word's number in the match, so the next word's
+                // win cannot inherit the finished state of this one. Only the
+                // paint moves — `top` is a relative offset, so the row's
+                // measurements are the same the whole way through.
+                glyph
+                    .with_animation(
+                        ElementId::named_usize(
+                            format!("word-reveal-{index}"),
+                            self.game.word_number(),
+                        ),
+                        // Linear on purpose: the easing belongs to the letter's
+                        // own fade, not to its place in the queue.
+                        Animation::new(reveal_span(index)),
+                        move |this, delta| {
+                            let progress = ease_in_out(reveal_progress(index, delta));
+                            this.opacity(progress)
+                                .top(px(REVEAL_RISE * (1. - progress)))
+                        },
+                    )
+                    .into_any_element()
+            } else {
+                glyph.into_any_element()
+            })
             .when(cell.guessable, |this| {
                 this.child(
                     div()
@@ -554,27 +648,49 @@ impl HangmanView {
     }
 
     fn render_word_panel(&self, cx: &Context<Self>) -> impl IntoElement {
+        let wrong = self.game.wrong_guesses();
+
+        let row = h_flex()
+            .w_full()
+            .gap(WORD_GAP)
+            .flex_wrap()
+            .justify_center()
+            // `cells()` already reveals the whole word once the game is over,
+            // and marks ' ' and '/' as non-guessable so they show for free.
+            .children(
+                self.game
+                    .cells()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, cell)| self.render_word_cell(index, cell, cx)),
+            );
+
         panel(cx)
             .gap_2()
             .px_5()
             .py_3()
             .child(eyebrow("THE WORD", cx))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap(WORD_GAP)
-                    .flex_wrap()
-                    .justify_center()
-                    // `cells()` already reveals the whole word once the game is
-                    // over, and marks ' ' and '/' as non-guessable so they show
-                    // for free.
-                    .children(
-                        self.game
-                            .cells()
-                            .into_iter()
-                            .map(|cell| self.render_word_cell(cell, cx)),
-                    ),
-            )
+            .child(if wrong == 0 {
+                row.into_any_element()
+            } else {
+                // A wrong guess shakes the word. The wrong-guess count is *in
+                // the element id*, which is what makes this fire once per
+                // guess: `with_animation` keys its state on the id and starts
+                // the clock the frame that id first appears, so a fixed id
+                // would shake once and then sit still for the rest of the
+                // match. Guessing wrong is a new count, so a new id, so a
+                // fresh animation. Below zero wrong guesses there is no
+                // animation at all, which also keeps the row from twitching at
+                // startup and re-arms it after a new game.
+                row.with_animation(
+                    ElementId::named_usize("word-shake", wrong),
+                    Animation::new(SHAKE),
+                    // `left` on a relative element offsets the paint only: the
+                    // row keeps its size and its neighbours keep their places.
+                    |this, delta| this.left(px(shake_offset(delta))),
+                )
+                .into_any_element()
+            })
     }
 
     /// One letter key, dressed for whichever state it is in.
@@ -786,17 +902,52 @@ impl HangmanView {
                     .child(
                         // Six pips, one per wrong guess: the score the drawing
                         // is keeping, in a form you can count at a glance.
-                        h_flex()
-                            .gap_1p5()
-                            .children((0..MAX_WRONG_GUESSES).map(|step| {
-                                div().size(px(9.)).rounded_full().bg(if step < wrong {
-                                    cx.theme().danger
-                                } else {
-                                    cx.theme().muted_foreground.alpha(0.25)
-                                })
-                            })),
+                        h_flex().gap_1p5().children(
+                            (0..MAX_WRONG_GUESSES).map(|step| Self::render_pip(step, wrong, cx)),
+                        ),
                     ),
             )
+    }
+
+    /// One wrong-guess pip, and — for the one this guess just filled — the
+    /// pulse that marks it turning red.
+    ///
+    /// The pulse is a halo drawn *behind* the pip: it grows past it and fades
+    /// out, so it finishes invisible, which is exactly how a pip that has been
+    /// red for a while should look. It is positioned absolutely inside a
+    /// pip-sized box, so growing it moves nothing else along the row.
+    fn render_pip(step: usize, wrong: usize, cx: &Context<Self>) -> impl IntoElement {
+        let filled = step < wrong;
+        // The pip the last wrong guess filled, and only while it is the last.
+        let fresh = filled && step + 1 == wrong;
+        let danger = cx.theme().danger;
+
+        div()
+            .relative()
+            .size(PIP_SIZE)
+            .when(fresh, |this| {
+                this.child(div().absolute().rounded_full().bg(danger).with_animation(
+                    // The wrong-guess count is *in the element id*, so
+                    // each new wrong guess mounts this fresh and plays
+                    // it again; with a fixed id `with_animation` would
+                    // run it once and treat every later pip as the same
+                    // element, already finished.
+                    ElementId::named_usize("pip-pulse", wrong),
+                    Animation::new(PIP_PULSE).with_easing(ease_out_quint()),
+                    |this, delta| {
+                        let grow = PIP_HALO * delta;
+                        this.size(PIP_SIZE + grow * 2.)
+                            .left(-grow)
+                            .top(-grow)
+                            .opacity(PIP_HALO_ALPHA * (1. - delta))
+                    },
+                ))
+            })
+            .child(div().size_full().rounded_full().bg(if filled {
+                danger
+            } else {
+                cx.theme().muted_foreground.alpha(0.25)
+            }))
     }
 
     fn render_play_column(&self, cx: &Context<Self>) -> impl IntoElement {
