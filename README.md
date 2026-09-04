@@ -1,8 +1,8 @@
 # hangman-gpui
 
 A Rust + [GPUI](https://www.gpui.rs/) port of [`zerebos/Hangman`](https://github.com/zerebos/Hangman),
-a 2015 Java/Swing hangman game. Same rules, same word lists, same layout and the
-same (slightly unhinged) alert messages — rebuilt with
+a 2015 Java/Swing hangman game. Same rules, same word lists, same artwork, same
+layout and the same (slightly unhinged) alert messages — rebuilt with
 [gpui-kit](https://gpui-kit.com) instead of Swing.
 
 ```
@@ -22,7 +22,10 @@ same (slightly unhinged) alert messages — rebuilt with
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 26 unit tests), and [`src/ui/`](src/ui/) is everything GPUI.
+engine (with 26 unit tests), and [`src/ui/`](src/ui/) is everything GPUI. The
+word lists and the original's gallows artwork live in [`assets/`](assets/) and
+are compiled into the binary, so there is nothing to install next to the
+executable.
 
 ## Building and running
 
@@ -83,10 +86,6 @@ new word list to start over.
   keyboard and a character LCD over RS-232, which changed the window size, swapped
   the letter grid for read-only labels and added a whole `Setup` menu. None of
   that is ported.
-- **The gallows is vector art, not images.** The original shipped a `pole.jpg`
-  gallows and six raster victim frames — and the last frame replaced the cartoon
-  head with a photograph of a real person. This port draws all seven stages as
-  paths on a GPUI canvas instead, so it scales with the window and ships nothing.
 - **Keyboard input was added.** The original had no key listener at all: in
   standalone mode you could only click the letter buttons. Here, typing a letter
   guesses it.
