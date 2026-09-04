@@ -164,8 +164,10 @@ the order they were argued about rather than in any committed order.
 ### UI and UX
 
 5. **Animation and game feel** *(in progress).* Cross-fade the gallows, shake the
-   word on a wrong guess, stagger-reveal the letters on a win, and pulse the
-   wrong-guess pips.
+   word on a wrong guess, fade the cells a correct guess turns over up into
+   place, stagger-reveal the letters on a win, pulse the wrong-guess pips, and
+   settle a letter key into the colour its guess earned it. Still snapping: the
+   keys that go out of play when the game ends.
 6. **Draw the gallows procedurally**, with `canvas()` and `PathBuilder`, so it
    scales, follows the theme and copes with any guess budget. The trade-off is
    real: it retires the bundled artwork.
