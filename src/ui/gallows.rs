@@ -16,7 +16,7 @@ use gpui_kit::*;
 /// PNG. It is still the original opaque `pole.jpg`: swap the filename (and
 /// `jpeg` for `png`) once `pole.png` lands and nothing else has to change.
 static GALLOWS: LazyLock<Arc<Image>> =
-    LazyLock::new(|| jpeg(include_bytes!("../../assets/images/pole.jpg")));
+    LazyLock::new(|| png(include_bytes!("../../assets/images/pole.png")));
 
 /// The six victim frames, in the order the original showed them.
 static STAGES: LazyLock<[Arc<Image>; 6]> = LazyLock::new(|| {
@@ -75,10 +75,6 @@ pub fn gallows(stage: usize) -> impl IntoElement {
 /// cache, keyed on their content hash.
 fn embedded(format: ImageFormat, bytes: &[u8]) -> Arc<Image> {
     Arc::new(Image::from_bytes(format, bytes.to_vec()))
-}
-
-fn jpeg(bytes: &[u8]) -> Arc<Image> {
-    embedded(ImageFormat::Jpeg, bytes)
 }
 
 fn png(bytes: &[u8]) -> Arc<Image> {
