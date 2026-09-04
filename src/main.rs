@@ -1,6 +1,6 @@
 //! Hangman — a Rust + GPUI port of Zack Rauen's 2015 Java hangman.
 
-use gpui_kit::component::{Root, TitleBar};
+use gpui_kit::component::{Root, Theme, ThemeMode, TitleBar};
 use gpui_kit::*;
 
 use hangman_gpui::ui::{ChangeWord, HangmanView, KEY_CONTEXT, OpenWordList};
@@ -13,6 +13,12 @@ fn main() {
         // Must run before anything touches a gpui-kit component.
         gpui_kit::init(cx);
 
+        // `gpui_kit::init` installs the light palette; this game is dark first.
+        // `Theme` is a GPUI global, so this one call restyles every component.
+        // Swap it for `Theme::sync_system_appearance(None, cx)` to follow the
+        // desktop instead — the in-window toggle overrides either way.
+        Theme::change(ThemeMode::Dark, None, cx);
+
         // The original's Game menu accelerators, minus the menu bar.
         cx.bind_keys([
             KeyBinding::new("ctrl-o", OpenWordList, Some(KEY_CONTEXT)),
@@ -22,8 +28,8 @@ fn main() {
         // `WindowBounds::centered` needs an `&App`, which the async block below
         // does not have, so build the options out here.
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(900.), px(560.)), cx)),
-            window_min_size: Some(size(px(720.), px(480.))),
+            window_bounds: Some(WindowBounds::centered(size(px(1000.), px(760.)), cx)),
+            window_min_size: Some(size(px(880.), px(660.))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Hangman!".into()),
                 ..TitleBar::title_bar_options()

@@ -12,8 +12,9 @@ use gpui_kit::*;
 
 /// The gallows backdrop, drawn behind every stage.
 ///
-/// It is an opaque JPEG: replacing this one line with a transparent PNG is all
-/// it takes to drop the white background over in `render_gallows_panel`.
+/// The stage panel it sits on is themed, so this wants to be a transparent
+/// PNG. It is still the original opaque `pole.jpg`: swap the filename (and
+/// `jpeg` for `png`) once `pole.png` lands and nothing else has to change.
 static GALLOWS: LazyLock<Arc<Image>> =
     LazyLock::new(|| jpeg(include_bytes!("../../assets/images/pole.jpg")));
 
