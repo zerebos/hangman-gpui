@@ -22,10 +22,11 @@ layout, the same two sound cues and the same (slightly unhinged) alert messages
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 26 unit tests), and [`src/ui/`](src/ui/) is everything GPUI. The
-word lists, the original's gallows artwork and its two mp3 cues live in
-[`assets/`](assets/) and are compiled into the binary, so there is nothing to
-install next to the executable.
+engine (with 26 unit tests), [`src/settings.rs`](src/settings.rs) is the equally
+UI-free file that remembers your choices between launches (with 20 more), and
+[`src/ui/`](src/ui/) is everything GPUI. The word lists, the original's gallows
+artwork and its two mp3 cues live in [`assets/`](assets/) and are compiled into
+the binary, so there is nothing to install next to the executable.
 
 ## Building and running
 
@@ -99,6 +100,45 @@ those come from the C library, not from the game.)
 
 [rodio]: https://crates.io/crates/rodio
 
+## Settings
+
+The theme, the window's size and position, and the difficulty you last picked
+are remembered between launches. They are written to a small JSON file the
+moment you change one of them — the window's geometry when you close it — in the
+usual place for your platform:
+
+| Platform | Path |
+| --- | --- |
+| Windows | `%APPDATA%\hangman-gpui\settings.json` |
+| macOS | `~/Library/Application Support/hangman-gpui/settings.json` |
+| Linux | `$XDG_CONFIG_HOME/hangman-gpui/settings.json`, or `~/.config/hangman-gpui/settings.json` |
+
+```json
+{
+  "theme": "dark",
+  "difficulty": "Medium",
+  "window": {
+    "rect": {
+      "x": 460.0,
+      "y": 160.0,
+      "width": 1000.0,
+      "height": 760.0
+    },
+    "maximized": false
+  }
+}
+```
+
+Nothing in there is required: delete the file, edit it by hand, or leave it on a
+read-only disk, and the game falls back to its defaults — dark, centred, Easy —
+saying so on stderr at worst. A saved window that no longer fits the monitors
+you have is resized and moved back on screen rather than trusted, so unplugging
+a second monitor can never strand the window somewhere you cannot reach it.
+
+Match scores are *not* saved: wins and losses belong to the match you are
+playing and reset with it. Lifetime stats are part of the scoring rework in
+roadmap item 2.
+
 ## Controls
 
 | Action | How |
@@ -163,7 +203,7 @@ the order they were argued about rather than in any committed order.
 
 ### UI and UX
 
-5. **Animation and game feel** *(in progress).* Cross-fade the gallows, shake the
+5. **Animation and game feel** *(done).* Cross-fade the gallows, shake the
    word on a wrong guess, fade the cells a correct guess turns over up into
    place, stagger-reveal the letters on a win, pulse the wrong-guess pips, and
    settle a letter key into the colour its guess earned it. Still snapping: the
@@ -176,8 +216,11 @@ the order they were argued about rather than in any committed order.
 
 ### Craft
 
-8. **Persist settings and stats.** Nothing is written to disk today, so the theme
-   choice and the window geometry reset on every launch.
+8. **Persist settings** *(done).* The theme, the window geometry and the chosen
+   difficulty are written to a JSON file in the platform's config directory and
+   restored at startup — see [Settings](#settings). Stats are not: `wins` and
+   `losses` are per-match counters that reset with the match, so a number worth
+   keeping between launches waits on item 2.
 9. **Make the UI testable.** Pull the pure helpers out of
    [`src/ui/mod.rs`](src/ui/mod.rs) — which has no tests at all — and cover them.
 
