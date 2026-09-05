@@ -143,6 +143,48 @@ new word list to start over.
 - **Small addition:** a muted `Word n of 10` counter next to the score, so you can
   tell how much of a match is left.
 
+## Roadmap
+
+The port has caught up with the Java original, so from here the game stops
+mirroring it. These are the nine ideas agreed for where it goes next, roughly in
+the order they were argued about rather than in any committed order.
+
+### Game and rules
+
+1. **Hints, at a cost.** Reveal an unguessed letter in exchange for a wrong
+   guess, or out of a small per-match budget.
+2. **Scoring and streaks.** Retire the bare `wins` / `losses` counters in favour
+   of points per word, plus a current and a best streak.
+3. **Structured word packs.** Move the four ten-word lists into a serde format
+   that carries a category, a hint and a clue per word, so a match no longer
+   exhausts the pool.
+4. **Difficulty that changes the guess budget.** `MAX_WRONG_GUESSES` is a hard 6
+   today. Blocked on item 6: the seven artwork frames assume exactly six.
+
+### UI and UX
+
+5. **Animation and game feel** *(in progress).* Cross-fade the gallows, shake the
+   word on a wrong guess, fade the cells a correct guess turns over up into
+   place, stagger-reveal the letters on a win, pulse the wrong-guess pips, and
+   settle a letter key into the colour its guess earned it. Still snapping: the
+   keys that go out of play when the game ends.
+6. **Draw the gallows procedurally**, with `canvas()` and `PathBuilder`, so it
+   scales, follows the theme and copes with any guess budget. The trade-off is
+   real: it retires the bundled artwork.
+7. **Keyboard hints.** Surface the shortcuts in the window itself with gpui-kit's
+   `Kbd` and `Tooltip::action`.
+
+### Craft
+
+8. **Persist settings and stats.** Nothing is written to disk today, so the theme
+   choice and the window geometry reset on every launch.
+9. **Make the UI testable.** Pull the pure helpers out of
+   [`src/ui/mod.rs`](src/ui/mod.rs) — which has no tests at all — and cover them.
+
+**Not planned:** networked multiplayer — the original's external layer is the one
+thing the port deliberately dropped, and this would only bring it back — fetching
+words from a dictionary API, and custom JSON themes with hot reload.
+
 ## Credits
 
 Original game © Zack Rauen ([zerebos](https://github.com/zerebos)), 2015.

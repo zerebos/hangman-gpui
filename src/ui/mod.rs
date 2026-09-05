@@ -8,11 +8,13 @@
 
 mod gallows;
 
+use std::time::Duration;
+
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Root, Selectable as _, Sizable as _,
-    StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Colorize as _, Disableable as _, IconName, Root, Selectable as _,
+    Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -57,6 +59,120 @@ const WORD_CELL_HEIGHT: Pixels = px(38.);
 const WORD_GAP: Pixels = px(10.);
 /// The rule drawn under each guessable character.
 const WORD_RULE_HEIGHT: Pixels = px(3.);
+
+// ------------------------------------------------------------------ motion
+//
+// Everything below is UI feel only: no timing here can change a rule, a score
+// or a layout dimension. Each effect is a one-shot animation whose end state is
+// exactly how the element looks at rest, so a finished animation leaves the
+// window looking as it did before any of this existed.
+//
+// None of them checks a motion preference, on purpose: `with_animation` already
+// honours `App::reduce_motion` for us, rendering a one-shot animation's end
+// state and scheduling no frames at all
+// (`gpui-pre-0.3.3/src/elements/animation.rs:406-419`).
+
+/// How long the word row's wrong-guess shake lasts.
+const SHAKE: Duration = Duration::from_millis(320);
+/// How far the shake throws the row, at its widest.
+const SHAKE_DISTANCE: f32 = 5.;
+/// How many sine cycles it runs through. A multiple of a half cycle, so the
+/// wave lands back on zero and the row ends exactly where it started.
+const SHAKE_CYCLES: f32 = 2.5;
+
+/// The win flourish: the whole word resolving left to right, once, as the
+/// celebration for having finished it.
+const WIN_REVEAL: Reveal = Reveal {
+    fade: 0.26,
+    step: 0.055,
+    rise: 7.,
+};
+/// A correct guess mid-game: only the cells that letter just turned over.
+/// Quicker and tighter than the win, and it moves less far, because this is
+/// feedback on one guess rather than the end of the word.
+const GUESS_REVEAL: Reveal = Reveal {
+    fade: 0.2,
+    step: 0.07,
+    rise: 5.,
+};
+
+/// One wrong-guess pip.
+const PIP_SIZE: Pixels = px(9.);
+/// How far past the pip its pulse expands before fading out.
+const PIP_HALO: Pixels = px(7.);
+/// How solid that halo is when it starts.
+const PIP_HALO_ALPHA: f32 = 0.45;
+/// How long the pulse takes.
+const PIP_PULSE: Duration = Duration::from_millis(420);
+
+/// How long a letter key takes to settle into the colour of the guess it just
+/// took. Short: this is the answer to a keypress, so it has to feel prompt.
+const KEY_SETTLE: Duration = Duration::from_millis(240);
+
+/// The word row's horizontal offset, `delta` of the way through a shake.
+///
+/// A sine wave damped to nothing, so it starts and ends at zero however it is
+/// sampled — a shake that stopped off-centre would move the row for good.
+fn shake_offset(delta: f32) -> f32 {
+    SHAKE_DISTANCE * (1. - delta) * (delta * SHAKE_CYCLES * std::f32::consts::TAU).sin()
+}
+
+/// A staggered fade-in: letters resolving one after another, each rising the
+/// last few pixels into place as it appears.
+///
+/// One shape, two settings: the word row uses it for the win flourish and for
+/// the cells a correct guess just turned over, which differ only in how fast
+/// and how far they move.
+#[derive(Clone, Copy)]
+struct Reveal {
+    /// How long one letter's own fade lasts, in seconds.
+    fade: f32,
+    /// How far apart consecutive letters start, in seconds. This is the stagger.
+    step: f32,
+    /// How far below its place a letter starts, in pixels.
+    rise: f32,
+}
+
+impl Reveal {
+    /// How long the whole animation of the letter at `index` runs: its share of
+    /// the stagger, and then its own fade.
+    fn span(self, index: usize) -> Duration {
+        Duration::from_secs_f32(self.step * index as f32 + self.fade)
+    }
+
+    /// How far the letter at `index` is through its own fade, `delta` of the way
+    /// through [`Reveal::span`].
+    ///
+    /// The animation runs on a linear easing, so `delta` times the span is
+    /// elapsed seconds; the letter sits still until its slot comes round and is
+    /// finished at `delta == 1`, whatever its index.
+    fn progress(self, index: usize, delta: f32) -> f32 {
+        let delay = self.step * index as f32;
+        let span = delay + self.fade;
+        ((delta * span - delay) / self.fade).clamp(0., 1.)
+    }
+
+    /// The glyph at `index`, drawn `delta` of the way through the reveal.
+    ///
+    /// Only the paint moves: `top` on a relative element is an offset, so the
+    /// row measures the same the whole way through, and at `delta == 1` the
+    /// glyph is fully opaque and exactly where it belongs.
+    fn draw(self, glyph: Div, index: usize, delta: f32) -> Div {
+        let progress = ease_in_out(self.progress(index, delta));
+        glyph.opacity(progress).top(px(self.rise * (1. - progress)))
+    }
+}
+
+/// `from` blended `progress` of the way towards `to`, in Oklab.
+///
+/// `Colorize::mix_oklab` weights its *receiver* by the factor it is handed
+/// (`gpui-component-0.6.0/src/theme/color.rs:212`), which reads backwards from
+/// a lerp, hence the inversion: a progress of 0 is all `from`, 1 all `to`.
+/// Oklab rather than channel-wise, so a near-grey key on its way to green does
+/// not detour through a hue that is in neither end state.
+fn blend(from: Hsla, to: Hsla, progress: f32) -> Hsla {
+    from.mix_oklab(to, 1. - progress)
+}
 
 actions!(hangman, [OpenWordList, ChangeWord]);
 
@@ -135,6 +251,13 @@ pub struct HangmanView {
     /// blank line. The end-of-match message is derived on the fly instead, in
     /// [`HangmanView::match_summary`].
     notice: Option<Notice>,
+    /// The letter of the last guess that actually landed — a correct or a
+    /// wrong one, never a duplicate or an invalid character. It is what tells
+    /// the word row which cells this guess just turned over and the keyboard
+    /// which key to settle, so it lives here rather than in [`Game`]: it is a
+    /// fact about the last frame, not about the rules. Cleared whenever a
+    /// fresh word starts, so nothing animates at the top of a game.
+    last_guess: Option<char>,
     /// GPUI only delivers key events to elements on the focus path, so the root
     /// element has to own a focus handle and actually be focused before typing
     /// a letter can reach us.
@@ -150,6 +273,7 @@ impl HangmanView {
         Self {
             game: Game::new(Difficulty::default()),
             notice: None,
+            last_guess: None,
             focus_handle: cx.focus_handle(),
             audio: Audio::new(),
         }
@@ -161,6 +285,13 @@ impl HangmanView {
         let outcome = self.game.guess(letter);
         if outcome.result == GuessResult::Ignored {
             return;
+        }
+
+        // Only a guess that changed something is worth animating. A duplicate
+        // or an invalid character leaves the previous guess's letter in place,
+        // whose animations have long since finished, so nothing replays.
+        if matches!(outcome.result, GuessResult::Correct | GuessResult::Wrong) {
+            self.last_guess = Some(letter.to_ascii_uppercase());
         }
 
         self.notice = match outcome.result {
@@ -200,6 +331,7 @@ impl HangmanView {
         // match summary in that case rather than a button that does nothing.
         if self.game.new_game() {
             self.notice = None;
+            self.last_guess = None;
             cx.notify();
         }
     }
@@ -207,6 +339,7 @@ impl HangmanView {
     fn set_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
         self.game.set_difficulty(difficulty);
         self.notice = None;
+        self.last_guess = None;
         cx.notify();
     }
 
@@ -271,6 +404,7 @@ impl HangmanView {
         match loaded {
             Some(()) => {
                 self.notice = None;
+                self.last_guess = None;
                 window.push_notification(
                     format!("Loaded {} words. New match!", self.game.total_words()),
                     cx,
@@ -332,6 +466,16 @@ impl HangmanView {
             Some(difficulty) => difficulty.label().into(),
             None => "Custom word list".into(),
         }
+    }
+
+    /// How many guesses have landed this game.
+    ///
+    /// Element ids that carry this number mount fresh on every accepted guess,
+    /// which is what lets a one-shot animation play again instead of once at
+    /// mount — `with_animation` stamps its start time only when its element
+    /// state is missing (`gpui-pre-0.3.3/src/elements/animation.rs:400-405`).
+    fn guess_count(&self) -> usize {
+        self.game.guessed_letters().len()
     }
 
     /// How the key for `letter` should be drawn right now.
@@ -502,7 +646,18 @@ impl HangmanView {
     }
 
     /// One character of the word: the glyph, and the rule it sits on.
-    fn render_word_cell(&self, cell: Cell, cx: &Context<Self>) -> impl IntoElement {
+    ///
+    /// `index` is the cell's place in the word, which is also its place in the
+    /// stagger when the word is revealed on a win. `fresh` is set instead when
+    /// the *last guess* turned this cell over, and carries the cell's place
+    /// among that letter's own occurrences — see [`HangmanView::render_word_panel`].
+    fn render_word_cell(
+        &self,
+        index: usize,
+        cell: Cell,
+        fresh: Option<usize>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         // On a loss every cell is revealed, so mark the ones the player never
         // actually guessed — that is the answer, not their work.
         let missed = self.game.game_result() == Some(GameResult::Lost)
@@ -522,6 +677,15 @@ impl HangmanView {
             cx.theme().muted_foreground.alpha(0.4)
         };
 
+        let glyph = h_flex()
+            .h(WORD_CELL_HEIGHT)
+            .justify_center()
+            .text_size(px(30.))
+            .font_bold()
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_color(glyph_color)
+            .when(cell.revealed, |this| this.child(cell.value.to_string()));
+
         v_flex()
             .items_center()
             .gap_1p5()
@@ -532,16 +696,46 @@ impl HangmanView {
             } else {
                 WORD_CELL_WIDTH / 2.
             })
-            .child(
-                h_flex()
-                    .h(WORD_CELL_HEIGHT)
-                    .justify_center()
-                    .text_size(px(30.))
-                    .font_bold()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_color(glyph_color)
-                    .when(cell.revealed, |this| this.child(cell.value.to_string())),
-            )
+            .child(if self.game.is_won() {
+                // Won: the letters resolve one after another instead of the
+                // whole word landing at once. Two things arm this. The cells
+                // only carry an animation while the game is won, so losing the
+                // element between games is what lets it play again; and the id
+                // carries the word's number in the match, so the next word's
+                // win cannot inherit the finished state of this one.
+                //
+                // This branch comes first deliberately. The guess that wins is
+                // also a guess that reveals letters, so both reveals are live
+                // on the same frame; taking the win first means the row plays
+                // one flourish rather than a cell running two fades at once.
+                glyph
+                    .with_animation(
+                        ElementId::named_usize(
+                            format!("word-reveal-{index}"),
+                            self.game.word_number(),
+                        ),
+                        // Linear on purpose: the easing belongs to the letter's
+                        // own fade, not to its place in the queue.
+                        Animation::new(WIN_REVEAL.span(index)),
+                        move |this, delta| WIN_REVEAL.draw(this, index, delta),
+                    )
+                    .into_any_element()
+            } else if let Some(ordinal) = fresh {
+                // Mid-game: the cells this guess just filled fade up into
+                // place, the rest are already there and stay put. Same two
+                // arming tricks as the win — the element exists only while
+                // this letter is the last one guessed, and the id carries the
+                // guess count so a later guess cannot inherit its state.
+                glyph
+                    .with_animation(
+                        ElementId::named_usize(format!("word-guess-{index}"), self.guess_count()),
+                        Animation::new(GUESS_REVEAL.span(ordinal)),
+                        move |this, delta| GUESS_REVEAL.draw(this, ordinal, delta),
+                    )
+                    .into_any_element()
+            } else {
+                glyph.into_any_element()
+            })
             .when(cell.guessable, |this| {
                 this.child(
                     div()
@@ -554,27 +748,61 @@ impl HangmanView {
     }
 
     fn render_word_panel(&self, cx: &Context<Self>) -> impl IntoElement {
+        let wrong = self.game.wrong_guesses();
+        let cells = self.game.cells();
+        // A letter's occurrences stagger against each other, not against the
+        // word: guessing the only E in a long word should not wait out the
+        // stagger of the eight cells in front of it, and four Es in a row
+        // should still land one after another. So this counts the matches as
+        // the row is built, and each cell is handed its place among them.
+        let mut occurrences = 0usize;
+
+        let row = h_flex()
+            .w_full()
+            .gap(WORD_GAP)
+            .flex_wrap()
+            .justify_center()
+            // `cells()` already reveals the whole word once the game is over,
+            // and marks ' ' and '/' as non-guessable so they show for free.
+            .children(cells.into_iter().enumerate().map(|(index, cell)| {
+                // The cells this guess turned over are exactly the revealed
+                // ones holding the letter it guessed: every other revealed
+                // cell came from an earlier guess and must not move again.
+                // (' ' and '/' are free, but never equal an A-Z guess.)
+                let fresh = (self.last_guess == Some(cell.value) && cell.revealed).then(|| {
+                    let ordinal = occurrences;
+                    occurrences += 1;
+                    ordinal
+                });
+                self.render_word_cell(index, cell, fresh, cx)
+            }));
+
         panel(cx)
             .gap_2()
             .px_5()
             .py_3()
             .child(eyebrow("THE WORD", cx))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap(WORD_GAP)
-                    .flex_wrap()
-                    .justify_center()
-                    // `cells()` already reveals the whole word once the game is
-                    // over, and marks ' ' and '/' as non-guessable so they show
-                    // for free.
-                    .children(
-                        self.game
-                            .cells()
-                            .into_iter()
-                            .map(|cell| self.render_word_cell(cell, cx)),
-                    ),
-            )
+            .child(if wrong == 0 {
+                row.into_any_element()
+            } else {
+                // A wrong guess shakes the word. The wrong-guess count is *in
+                // the element id*, which is what makes this fire once per
+                // guess: `with_animation` keys its state on the id and starts
+                // the clock the frame that id first appears, so a fixed id
+                // would shake once and then sit still for the rest of the
+                // match. Guessing wrong is a new count, so a new id, so a
+                // fresh animation. Below zero wrong guesses there is no
+                // animation at all, which also keeps the row from twitching at
+                // startup and re-arms it after a new game.
+                row.with_animation(
+                    ElementId::named_usize("word-shake", wrong),
+                    Animation::new(SHAKE),
+                    // `left` on a relative element offsets the paint only: the
+                    // row keeps its size and its neighbours keep their places.
+                    |this, delta| this.left(px(shake_offset(delta))),
+                )
+                .into_any_element()
+            })
     }
 
     /// One letter key, dressed for whichever state it is in.
@@ -583,11 +811,19 @@ impl HangmanView {
     /// the variant's *pressed* surface and suppresses the hover and active
     /// styling, which is exactly "this key has been played" — where
     /// `disabled` would instead wash the colour out to a faint tint.
+    ///
+    /// The key a guess just played fades into that colour rather than snapping
+    /// to it. The colours are `Button`'s own — there is no outer element to
+    /// tint and no transform to scale with, since gpui's `Style` carries
+    /// neither (`gpui-pre-0.3.3/src/style.rs`; `Transformation` exists, but
+    /// only on `svg`). What makes a real tween possible instead is
+    /// `ButtonVariant::Custom`, whose colours the animator can rebuild every
+    /// frame.
     fn render_key(&self, letter: char, cx: &Context<Self>) -> impl IntoElement {
         let state = self.key_state(letter);
         let id = SharedString::from(format!("letter-{letter}"));
 
-        Button::new(id)
+        let button = Button::new(id)
             .label(letter.to_string())
             .size(KEY_SIZE)
             .font_semibold()
@@ -598,7 +834,71 @@ impl HangmanView {
                 KeyState::Correct => button.success().selected(true).toggled(true),
                 KeyState::Wrong => button.danger().selected(true).toggled(true),
                 KeyState::OutOfPlay => button.disabled(true),
-            })
+            });
+
+        // Only the key the guess just played, and only into the two colours a
+        // guess can produce. Every other key is already at rest.
+        let settling =
+            self.last_guess == Some(letter) && matches!(state, KeyState::Correct | KeyState::Wrong);
+        if !settling {
+            return button.into_any_element();
+        }
+
+        // Where the key is coming from: the three colours the unplayed
+        // `Default` variant paints (`gpui-component-0.6.0/src/button/button.rs`
+        // `:890` background, `:904` text, `:956` border).
+        let from_bg = cx.theme().button;
+        let from_border = cx.theme().input;
+        let from_text = cx.theme().button_foreground;
+        // …and where it is going: the same three for a *selected* `Success` or
+        // `Danger`, which is what `.success().selected(true)` above resolves to
+        // (`button.rs:1188`).
+        let (to_bg, to_border, to_text) = if state == KeyState::Correct {
+            (
+                cx.theme().button_success_active,
+                cx.theme().button_success,
+                cx.theme().button_success_foreground,
+            )
+        } else {
+            (
+                cx.theme().button_danger_active,
+                cx.theme().button_danger,
+                cx.theme().button_danger_foreground,
+            )
+        };
+        let custom = ButtonCustomVariant::new(cx);
+
+        button
+            .with_animation(
+                // The guess count is *in the element id*, exactly as the pip
+                // pulse carries the wrong-guess count: with a fixed id this
+                // would play once at mount and every later key would inherit
+                // the finished state.
+                ElementId::named_usize(format!("key-settle-{letter}"), self.guess_count()),
+                Animation::new(KEY_SETTLE).with_easing(ease_in_out),
+                move |button, delta| {
+                    if delta >= 1. {
+                        // The resting frame is the button exactly as it was
+                        // built. That matters: a theme may paint these tokens
+                        // as gradients, which a flat colour cannot reproduce,
+                        // so the tween is an approximation the key must not be
+                        // left sitting on.
+                        return button;
+                    }
+                    // A selected `Custom` reads `active` as its background,
+                    // `color` as its border and `foreground` as its text, so
+                    // handing it three blended colours per frame tweens the
+                    // real button rather than faking one with an overlay.
+                    button.custom(
+                        custom
+                            .active(blend(from_bg, to_bg, delta))
+                            .hover(blend(from_bg, to_bg, delta))
+                            .color(blend(from_border, to_border, delta))
+                            .foreground(blend(from_text, to_text, delta)),
+                    )
+                },
+            )
+            .into_any_element()
     }
 
     fn render_keyboard(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -786,17 +1086,52 @@ impl HangmanView {
                     .child(
                         // Six pips, one per wrong guess: the score the drawing
                         // is keeping, in a form you can count at a glance.
-                        h_flex()
-                            .gap_1p5()
-                            .children((0..MAX_WRONG_GUESSES).map(|step| {
-                                div().size(px(9.)).rounded_full().bg(if step < wrong {
-                                    cx.theme().danger
-                                } else {
-                                    cx.theme().muted_foreground.alpha(0.25)
-                                })
-                            })),
+                        h_flex().gap_1p5().children(
+                            (0..MAX_WRONG_GUESSES).map(|step| Self::render_pip(step, wrong, cx)),
+                        ),
                     ),
             )
+    }
+
+    /// One wrong-guess pip, and — for the one this guess just filled — the
+    /// pulse that marks it turning red.
+    ///
+    /// The pulse is a halo drawn *behind* the pip: it grows past it and fades
+    /// out, so it finishes invisible, which is exactly how a pip that has been
+    /// red for a while should look. It is positioned absolutely inside a
+    /// pip-sized box, so growing it moves nothing else along the row.
+    fn render_pip(step: usize, wrong: usize, cx: &Context<Self>) -> impl IntoElement {
+        let filled = step < wrong;
+        // The pip the last wrong guess filled, and only while it is the last.
+        let fresh = filled && step + 1 == wrong;
+        let danger = cx.theme().danger;
+
+        div()
+            .relative()
+            .size(PIP_SIZE)
+            .when(fresh, |this| {
+                this.child(div().absolute().rounded_full().bg(danger).with_animation(
+                    // The wrong-guess count is *in the element id*, so
+                    // each new wrong guess mounts this fresh and plays
+                    // it again; with a fixed id `with_animation` would
+                    // run it once and treat every later pip as the same
+                    // element, already finished.
+                    ElementId::named_usize("pip-pulse", wrong),
+                    Animation::new(PIP_PULSE).with_easing(ease_out_quint()),
+                    |this, delta| {
+                        let grow = PIP_HALO * delta;
+                        this.size(PIP_SIZE + grow * 2.)
+                            .left(-grow)
+                            .top(-grow)
+                            .opacity(PIP_HALO_ALPHA * (1. - delta))
+                    },
+                ))
+            })
+            .child(div().size_full().rounded_full().bg(if filled {
+                danger
+            } else {
+                cx.theme().muted_foreground.alpha(0.25)
+            }))
     }
 
     fn render_play_column(&self, cx: &Context<Self>) -> impl IntoElement {
