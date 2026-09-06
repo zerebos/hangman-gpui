@@ -128,7 +128,7 @@ usual place for your platform:
     "maximized": false
   },
   "stats": {
-    "points": 4820,
+    "points": 9210,
     "words_won": 31,
     "words_lost": 9,
     "streak": 3,
@@ -137,13 +137,13 @@ usual place for your platform:
     "matches_lost": 1,
     "matches_tied": 0,
     "by_difficulty": {
-      "Easy": { "points": 1130, "words_won": 10, "words_lost": 0,
+      "Easy": { "points": 1650, "words_won": 10, "words_lost": 0,
                 "matches_won": 1, "matches_lost": 0, "matches_tied": 0 },
       "Medium": { "points": 0, "words_won": 0, "words_lost": 0,
                   "matches_won": 0, "matches_lost": 0, "matches_tied": 0 },
       "Hard": { "points": 0, "words_won": 0, "words_lost": 0,
                 "matches_won": 0, "matches_lost": 0, "matches_tied": 0 },
-      "Insane": { "points": 3690, "words_won": 21, "words_lost": 9,
+      "Insane": { "points": 7560, "words_won": 21, "words_lost": 9,
                   "matches_won": 2, "matches_lost": 1, "matches_tied": 0 }
     }
   }
@@ -202,7 +202,7 @@ your head while you play:
 | Term | What it is |
 | --- | --- |
 | `50` | the flat rate for solving a word at all |
-| `10 × guesses left` | your unspent budget, so a clean win beats a scrape by 60 |
+| `10 × guesses left` | your unspent budget, so a clean win beats a scrape by 50 before the weight |
 | difficulty weight | Easy 1, Medium 2, Hard 3, Insane 4 — and 1 for a word list of your own |
 | streak steps | `min(streak − 1, 4)`, so the bonus builds to 100 and stops there |
 
