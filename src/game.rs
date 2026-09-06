@@ -57,6 +57,21 @@ impl Difficulty {
         }
     }
 
+    /// How much this difficulty multiplies a solved word by.
+    ///
+    /// The rules themselves do not use this — the guess budget is the same on
+    /// all four (see [`MAX_WRONG_GUESSES`]) — but which list you chose is a
+    /// property of the difficulty rather than of the scoreboard, so the number
+    /// lives here and [`crate::stats`] does the arithmetic with it.
+    pub fn weight(self) -> u32 {
+        match self {
+            Difficulty::Easy => 1,
+            Difficulty::Medium => 2,
+            Difficulty::Hard => 3,
+            Difficulty::Insane => 4,
+        }
+    }
+
     /// The raw contents of this difficulty's word list.
     ///
     /// The four lists are baked into the binary with `include_str!`, so there
@@ -202,8 +217,12 @@ pub struct Game {
     guessed: BTreeSet<char>,
     wrong_guesses: usize,
     result: Option<GameResult>,
-    wins: usize,
-    losses: usize,
+    // Per-match, and reset by `reset` along with the word pool: these exist so
+    // `finish_match` can compare them, which is a *rule*. Points, streaks and
+    // anything that outlives a match are `crate::stats`' business, not this
+    // module's.
+    words_won: usize,
+    words_lost: usize,
     match_outcome: Option<MatchOutcome>,
     rng: StdRng,
 }
@@ -267,8 +286,8 @@ impl Game {
             guessed: BTreeSet::new(),
             wrong_guesses: 0,
             result: None,
-            wins: 0,
-            losses: 0,
+            words_won: 0,
+            words_lost: 0,
             match_outcome: None,
             rng,
         };
@@ -368,8 +387,8 @@ impl Game {
     fn end_game(&mut self, result: GameResult, guess_result: GuessResult) -> GuessOutcome {
         self.result = Some(result);
         match result {
-            GameResult::Won => self.wins += 1,
-            GameResult::Lost => self.losses += 1,
+            GameResult::Won => self.words_won += 1,
+            GameResult::Lost => self.words_lost += 1,
         }
         // The match ends when the last word has been played out.
         let match_ = if self.remaining_words.is_empty() {
@@ -386,7 +405,7 @@ impl Game {
     }
 
     fn finish_match(&mut self) {
-        self.match_outcome = Some(match self.wins.cmp(&self.losses) {
+        self.match_outcome = Some(match self.words_won.cmp(&self.words_lost) {
             std::cmp::Ordering::Greater => MatchOutcome::Win,
             std::cmp::Ordering::Less => MatchOutcome::Loss,
             std::cmp::Ordering::Equal => MatchOutcome::Tie,
@@ -407,7 +426,9 @@ impl Game {
 
     /// Abandon the current match and start a fresh one on `difficulty`.
     ///
-    /// Wins, losses and the word pool all reset, and the first word is dealt.
+    /// The per-match word tally and the word pool both reset, and the first
+    /// word is dealt. The lifetime score and the streak in [`crate::stats`] are
+    /// untouched — a streak spans matches on purpose.
     pub fn set_difficulty(&mut self, difficulty: Difficulty) {
         self.reset(Some(difficulty), difficulty.words());
     }
@@ -431,8 +452,8 @@ impl Game {
         self.difficulty = difficulty;
         self.total_words = words.len();
         self.remaining_words = words;
-        self.wins = 0;
-        self.losses = 0;
+        self.words_won = 0;
+        self.words_lost = 0;
         self.match_outcome = None;
         if !self.deal_word() {
             self.finish_match();
@@ -510,14 +531,14 @@ impl Game {
         self.result == Some(GameResult::Won)
     }
 
-    /// Games won so far this match.
-    pub fn wins(&self) -> usize {
-        self.wins
+    /// Words won so far this match.
+    pub fn words_won(&self) -> usize {
+        self.words_won
     }
 
-    /// Games lost so far this match.
-    pub fn losses(&self) -> usize {
-        self.losses
+    /// Words lost so far this match.
+    pub fn words_lost(&self) -> usize {
+        self.words_lost
     }
 
     /// The difficulty being played, or `None` for a custom word list.
@@ -604,6 +625,21 @@ mod tests {
     }
 
     #[test]
+    fn difficulty_weights_climb_one_step_per_level() {
+        assert_eq!(
+            Difficulty::ALL.map(Difficulty::weight),
+            [1, 2, 3, 4],
+            "the four lists are worth 1x to 4x"
+        );
+    }
+
+    #[test]
+    fn the_easiest_difficulty_is_worth_the_least() {
+        assert_eq!(Difficulty::default().weight(), 1);
+        assert!(Difficulty::Insane.weight() > Difficulty::Easy.weight());
+    }
+
+    #[test]
     fn correct_guess_reveals_every_occurrence() {
         let mut game = game_with_word("BANANA");
         assert_eq!(game.display(), "______");
@@ -678,8 +714,8 @@ mod tests {
         assert_eq!(outcome.game, Some(GameResult::Lost));
         assert!(game.is_game_over());
         assert!(!game.is_won());
-        assert_eq!(game.losses(), 1);
-        assert_eq!(game.wins(), 0);
+        assert_eq!(game.words_lost(), 1);
+        assert_eq!(game.words_won(), 0);
         // The whole word is revealed once the game is over.
         assert_eq!(game.display(), "BANANA");
     }
@@ -693,8 +729,8 @@ mod tests {
         assert_eq!(outcome.result, GuessResult::Correct);
         assert_eq!(outcome.game, Some(GameResult::Won));
         assert!(game.is_won());
-        assert_eq!(game.wins(), 1);
-        assert_eq!(game.losses(), 0);
+        assert_eq!(game.words_won(), 1);
+        assert_eq!(game.words_lost(), 0);
         assert_eq!(game.display(), "BANANA");
     }
 
@@ -706,7 +742,7 @@ mod tests {
         let outcome = game.guess('Z');
         assert_eq!(outcome.result, GuessResult::Ignored);
         assert_eq!(game.wrong_guesses(), 0);
-        assert_eq!(game.wins(), 1);
+        assert_eq!(game.words_won(), 1);
     }
 
     #[test]
@@ -716,11 +752,11 @@ mod tests {
         assert_eq!(game.give_up(), None); // not the last word yet
         assert!(game.is_game_over());
         assert!(!game.is_won());
-        assert_eq!(game.losses(), 1);
+        assert_eq!(game.words_lost(), 1);
         assert_eq!(game.game_result(), Some(GameResult::Lost));
         // Giving up twice must not double-count.
         assert_eq!(game.give_up(), None);
-        assert_eq!(game.losses(), 1);
+        assert_eq!(game.words_lost(), 1);
     }
 
     #[test]
@@ -783,7 +819,7 @@ mod tests {
             game.new_game();
         }
         assert!(game.is_match_over());
-        assert_eq!(game.wins(), 10);
+        assert_eq!(game.words_won(), 10);
         // Once the match is over, no more words are dealt.
         assert!(!game.new_game());
     }
@@ -814,7 +850,7 @@ mod tests {
         game.new_game();
         lose_current_game(&mut game);
         assert_eq!(game.match_outcome(), Some(MatchOutcome::Win));
-        assert_eq!((game.wins(), game.losses()), (2, 1));
+        assert_eq!((game.words_won(), game.words_lost()), (2, 1));
     }
 
     #[test]
@@ -828,7 +864,7 @@ mod tests {
         game.new_game();
         win_current_game(&mut game);
         assert_eq!(game.match_outcome(), Some(MatchOutcome::Loss));
-        assert_eq!((game.wins(), game.losses()), (1, 2));
+        assert_eq!((game.words_won(), game.words_lost()), (1, 2));
     }
 
     #[test]
@@ -854,11 +890,11 @@ mod tests {
     fn switching_difficulty_starts_a_fresh_match() {
         let mut game = Game::with_seed(Difficulty::Easy, 1);
         lose_current_game(&mut game);
-        assert_eq!(game.losses(), 1);
+        assert_eq!(game.words_lost(), 1);
 
         game.set_difficulty(Difficulty::Insane);
         assert_eq!(game.difficulty(), Some(Difficulty::Insane));
-        assert_eq!((game.wins(), game.losses()), (0, 0));
+        assert_eq!((game.words_won(), game.words_lost()), (0, 0));
         assert!(!game.is_game_over());
         assert!(!game.is_match_over());
         assert_eq!(game.word_number(), 1);

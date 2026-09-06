@@ -24,6 +24,7 @@ use crate::game::{
     Cell, Difficulty, Game, GameResult, GuessResult, MAX_WRONG_GUESSES, MatchOutcome,
 };
 use crate::settings::{Rect, Settings, ThemeChoice, WindowFrame};
+use crate::stats::{DifficultyStats, Session};
 use gallows::gallows;
 
 /// The key context this view claims. Key bindings registered against it (see
@@ -55,6 +56,10 @@ const INDENTED_ROW: usize = 3;
 const KEY_SIZE: Pixels = px(42.);
 /// The gap between keys, and between the cells of the word.
 const KEY_GAP: Pixels = px(6.);
+
+/// The label column of the per-difficulty breakdown, sized for its own
+/// "DIFFICULTY" heading rather than for the four short names under it.
+const BREAKDOWN_LABEL_WIDTH: Pixels = px(88.);
 
 /// The stage column's width: the 300px artwork plus its panel padding.
 const STAGE_WIDTH: Pixels = px(332.);
@@ -263,6 +268,17 @@ fn blend(from: Hsla, to: Hsla, progress: f32) -> Hsla {
     from.mix_oklab(to, 1. - progress)
 }
 
+/// `"840 points"`, and `"1 point"` — because the summary line reads as a
+/// sentence and `1 points` in it would be the only thing anyone noticed.
+fn points(points: u32) -> String {
+    format!("{points} point{}", if points == 1 { "" } else { "s" })
+}
+
+/// A whole-number percentage of a `0.0..=1.0` rate, e.g. `"75%"`.
+fn percent(rate: f32) -> String {
+    format!("{:.0}%", rate * 100.)
+}
+
 actions!(hangman, [OpenWordList, ChangeWord]);
 
 /// A line of feedback, styled after the original's `alertMessage` label:
@@ -360,6 +376,13 @@ pub struct HangmanView {
     /// disk from the handler that changed it, so this is only ever a mirror of
     /// the file rather than state waiting to be flushed.
     settings: Settings,
+    /// The score: the match on screen, and the lifetime tally behind it. All
+    /// the arithmetic lives in [`crate::stats`], so nothing in this module
+    /// adds a point up for itself.
+    session: Session,
+    /// Whether the lifetime stats panel is expanded under the board. Pure view
+    /// state — nothing here is remembered between launches.
+    show_stats: bool,
 }
 
 impl HangmanView {
@@ -388,6 +411,11 @@ impl HangmanView {
             last_guess: None,
             focus_handle: cx.focus_handle(),
             audio: Audio::new(),
+            // The streak and the lifetime totals pick up exactly where the last
+            // run left them; the match score starts at zero, because the match
+            // on screen has only just been dealt.
+            session: Session::new(settings.stats.clone()),
+            show_stats: false,
             settings,
         }
     }
@@ -407,6 +435,9 @@ impl HangmanView {
             self.last_guess = Some(letter.to_ascii_uppercase());
         }
 
+        // Score it before the message is built: the win line quotes the points.
+        let earned = self.record(outcome.game, outcome.match_);
+
         self.notice = match outcome.result {
             GuessResult::Invalid => Some(Notice::bad(INVALID_GUESS)),
             // The original cleared the line on any ordinary guess, and only the
@@ -416,7 +447,7 @@ impl HangmanView {
                 // in `give_up`, which stays silent just as the original did.
                 Some(GameResult::Won) => {
                     self.audio.play_win();
-                    Some(Notice::good(GAME_WON))
+                    Some(Notice::good(format!("{GAME_WON} +{earned}")))
                 }
                 Some(GameResult::Lost) => {
                     self.audio.play_loss();
@@ -431,15 +462,66 @@ impl HangmanView {
     }
 
     fn give_up(&mut self, cx: &mut Context<Self>) {
+        // The guard is what keeps a finished word from being scored twice:
+        // `Game::give_up` already refuses, but it refuses silently, and the
+        // recording below would happily count a second loss.
         if self.game.is_game_over() {
             return;
         }
-        self.game.give_up();
+        let match_ = self.game.give_up();
+        // A word given up on is a word lost: no points, and the streak ends.
+        self.record(Some(GameResult::Lost), match_);
         self.notice = Some(Notice::bad(GAVE_UP));
         cx.notify();
     }
 
+    /// Put a finished word — and, when it was the last of the match, the match
+    /// — on the scoreboard, then write the new lifetime tally to disk.
+    ///
+    /// Returns what the word scored, which is 0 for anything but a win. Called
+    /// with the `game`/`match_` fields of a [`crate::game::GuessOutcome`], so
+    /// an ordinary guess passes `None` and this does nothing at all.
+    fn record(&mut self, game: Option<GameResult>, match_: Option<MatchOutcome>) -> u32 {
+        let Some(result) = game else {
+            return 0;
+        };
+
+        // Read *after* the guess landed, which is what the word is worth: the
+        // budget still unspent when the word was finished.
+        let difficulty = self.game.difficulty();
+        let earned = self
+            .session
+            .record_word(difficulty, result, self.game.remaining_guesses());
+        if let Some(outcome) = match_ {
+            self.session.record_match(difficulty, outcome);
+        }
+
+        // The stats are only ever a mirror of the session, like every other
+        // setting: written the moment they change rather than at exit.
+        self.settings.stats = self.session.stats().clone();
+        self.settings.save();
+        earned
+    }
+
+    /// Throw the lifetime tally away, from the button in the stats panel.
+    fn reset_stats(&mut self, cx: &mut Context<Self>) {
+        self.session.reset_stats();
+        self.settings.stats = self.session.stats().clone();
+        self.settings.save();
+        cx.notify();
+    }
+
+    fn toggle_stats(&mut self, cx: &mut Context<Self>) {
+        self.show_stats = !self.show_stats;
+        cx.notify();
+    }
+
     fn new_game(&mut self, cx: &mut Context<Self>) {
+        // The *next word* of the match, not a new match — so the match score
+        // deliberately carries on adding up here. `Session::start_match` is
+        // called only where a fresh word pool is dealt: `set_difficulty` and
+        // `load_word_list`.
+        //
         // Returns false once the word list is exhausted; the footer shows the
         // match summary in that case rather than a button that does nothing.
         if self.game.new_game() {
@@ -451,6 +533,9 @@ impl HangmanView {
 
     fn set_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
         self.game.set_difficulty(difficulty);
+        // A fresh match, so the match score starts again from zero. The streak
+        // and the lifetime tally are untouched on purpose — see `crate::stats`.
+        self.session.start_match();
         self.notice = None;
         self.last_guess = None;
         self.settings.difficulty = Some(difficulty);
@@ -527,6 +612,9 @@ impl HangmanView {
 
         match loaded {
             Some(()) => {
+                // A loaded list starts a fresh match, exactly as picking a
+                // difficulty does, so the match score restarts with it.
+                self.session.start_match();
                 self.notice = None;
                 self.last_guess = None;
                 window.push_notification(
@@ -570,17 +658,20 @@ impl HangmanView {
     /// out of sync with the score.
     fn match_summary(&self) -> Option<Notice> {
         let outcome = self.game.match_outcome()?;
-        let wins = self.game.wins();
-        let total = wins + self.game.losses();
+        let wins = self.game.words_won();
+        let total = wins + self.game.words_lost();
+        let scored = points(self.session.match_points());
 
         Some(match outcome {
-            MatchOutcome::Win => Notice::good(format!("Good job, you got {wins} out of {total}")),
-            MatchOutcome::Loss => {
-                Notice::bad(format!("Nice try, you only got {wins} out of {total}"))
-            }
-            MatchOutcome::Tie => {
-                Notice::good(format!("A tie, not bad, you got {wins} out of {total}"))
-            }
+            MatchOutcome::Win => Notice::good(format!(
+                "Good job, you got {wins} out of {total} for {scored}"
+            )),
+            MatchOutcome::Loss => Notice::bad(format!(
+                "Nice try, you only got {wins} out of {total} for {scored}"
+            )),
+            MatchOutcome::Tie => Notice::good(format!(
+                "A tie, not bad, you got {wins} out of {total} for {scored}"
+            )),
         })
     }
 
@@ -705,6 +796,19 @@ impl HangmanView {
                 h_flex()
                     .gap_2()
                     .child(
+                        // Outside the title bar, so — unlike the theme toggle —
+                        // this needs no `.occlude()`: nothing behind it is
+                        // waiting to turn the click into a window drag.
+                        Button::new("toggle-stats")
+                            .small()
+                            .ghost()
+                            .icon(IconName::ChartPie)
+                            .label("Stats")
+                            .selected(self.show_stats)
+                            .tooltip("Show the lifetime score, streak and tally")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_stats(cx))),
+                    )
+                    .child(
                         Button::new("change-word")
                             .small()
                             .ghost()
@@ -749,6 +853,7 @@ impl HangmanView {
 
     fn render_scoreboard(&self, cx: &Context<Self>) -> impl IntoElement {
         let divider = || div().w(px(1.)).h(px(30.)).bg(cx.theme().border);
+        let stats = self.session.stats();
 
         panel(cx)
             .flex_row()
@@ -757,25 +862,189 @@ impl HangmanView {
             .px_5()
             .py_3()
             .child(Self::render_stat(
-                self.game.wins().to_string(),
-                "WINS",
+                self.session.match_points().to_string(),
+                "SCORE",
+                cx.theme().foreground,
+                cx,
+            ))
+            .child(divider())
+            .child(Self::render_stat(
+                stats.streak.to_string(),
+                "STREAK",
                 cx.theme().green,
                 cx,
             ))
             .child(divider())
             .child(Self::render_stat(
-                self.game.losses().to_string(),
-                "LOSSES",
-                cx.theme().red,
+                stats.best_streak.to_string(),
+                "BEST",
+                cx.theme().blue,
                 cx,
             ))
             .child(divider())
             .child(Self::render_stat(
                 format!("{} / {}", self.game.word_number(), self.game.total_words()),
                 "WORD",
-                cx.theme().foreground,
+                cx.theme().muted_foreground,
                 cx,
             ))
+    }
+
+    /// The lifetime stats panel, folded out under the board by the toolbar's
+    /// Stats button.
+    ///
+    /// Inline and collapsible rather than a dialog on purpose: gpui-kit ships a
+    /// `Modal` and a `Dialog`, but this window already has every piece it needs
+    /// — `panel`, `eyebrow`, `render_stat` — and an unverified component API is
+    /// exactly the trap the project notes warn about.
+    fn render_stats_panel(&self, cx: &Context<Self>) -> impl IntoElement {
+        let stats = self.session.stats();
+
+        panel(cx)
+            .gap_3()
+            .px_5()
+            .py_3()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(eyebrow("LIFETIME STATS", cx))
+                    .child(
+                        // `.ghost()` and `.danger()` are the same slot — the
+                        // last one wins — so this is an *outlined* danger
+                        // button: unmistakably destructive without shouting
+                        // from the middle of a panel of numbers.
+                        Button::new("reset-stats")
+                            .xsmall()
+                            .danger()
+                            .outline()
+                            .icon(IconName::Delete)
+                            .label("Reset stats")
+                            .tooltip("Throw away every point, streak and tally")
+                            .on_click(cx.listener(|this, _, _, cx| this.reset_stats(cx))),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(Self::render_stat(
+                        stats.points.to_string(),
+                        "POINTS",
+                        cx.theme().foreground,
+                        cx,
+                    ))
+                    .child(Self::render_stat(
+                        stats.words_won.to_string(),
+                        "WORDS WON",
+                        cx.theme().green,
+                        cx,
+                    ))
+                    .child(Self::render_stat(
+                        stats.words_lost.to_string(),
+                        "WORDS LOST",
+                        cx.theme().red,
+                        cx,
+                    ))
+                    .child(Self::render_stat(
+                        percent(stats.win_rate()),
+                        "WIN RATE",
+                        cx.theme().foreground,
+                        cx,
+                    )),
+            )
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(Self::render_stat(
+                        stats.streak.to_string(),
+                        "STREAK",
+                        cx.theme().green,
+                        cx,
+                    ))
+                    .child(Self::render_stat(
+                        stats.best_streak.to_string(),
+                        "BEST STREAK",
+                        cx.theme().blue,
+                        cx,
+                    ))
+                    .child(Self::render_stat(
+                        format!(
+                            "{} / {} / {}",
+                            stats.matches_won, stats.matches_lost, stats.matches_tied
+                        ),
+                        "MATCHES W / L / T",
+                        cx.theme().foreground,
+                        cx,
+                    )),
+            )
+            .child(div().w_full().h(px(1.)).bg(cx.theme().border))
+            .child(
+                v_flex()
+                    .gap_1p5()
+                    .child(Self::render_breakdown_row(
+                        eyebrow("DIFFICULTY", cx),
+                        ["POINTS", "WON", "LOST", "MATCHES"]
+                            .map(|heading| eyebrow(heading, cx).into_any_element()),
+                    ))
+                    .children(Difficulty::ALL.map(|difficulty| {
+                        self.render_difficulty_row(difficulty, cx)
+                            .into_any_element()
+                    })),
+            )
+    }
+
+    /// One line of the per-difficulty breakdown: a label, then four numbers on
+    /// a shared grid so the columns line up down the table.
+    fn render_breakdown_row(label: impl IntoElement, cells: [AnyElement; 4]) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            // Wide enough for the "DIFFICULTY" heading itself, so the header
+            // and every row below it start their numbers at the same x.
+            .child(div().w(BREAKDOWN_LABEL_WIDTH).flex_none().child(label))
+            .children(cells.map(|cell| div().flex_1().child(cell)))
+    }
+
+    /// The breakdown line for one difficulty. A difficulty never played reads
+    /// as zeroes rather than being hidden: an empty row is information too.
+    fn render_difficulty_row(
+        &self,
+        difficulty: Difficulty,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let bucket = self.session.stats().for_difficulty(difficulty);
+        let DifficultyStats {
+            points,
+            words_won,
+            words_lost,
+            ..
+        } = bucket;
+
+        let number = |text: String, color: Hsla| {
+            div()
+                .text_sm()
+                .font_semibold()
+                .text_color(color)
+                .child(text)
+                .into_any_element()
+        };
+
+        Self::render_breakdown_row(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(difficulty.label()),
+            [
+                number(points.to_string(), cx.theme().foreground),
+                number(words_won.to_string(), cx.theme().green),
+                number(words_lost.to_string(), cx.theme().red),
+                number(
+                    bucket.matches_played().to_string(),
+                    cx.theme().muted_foreground,
+                ),
+            ],
+        )
     }
 
     /// One character of the word: the glyph, and the rule it sits on.
@@ -1281,6 +1550,9 @@ impl HangmanView {
                 self.render_result(cx).into_any_element()
             } else {
                 self.render_status_line(cx).into_any_element()
+            })
+            .when(self.show_stats, |this| {
+                this.child(self.render_stats_panel(cx))
             })
     }
 }

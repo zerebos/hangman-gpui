@@ -1,9 +1,10 @@
 //! The handful of choices that outlive a launch.
 //!
 //! The game used to start identically every time: light/dark reset to dark, the
-//! window reopened centred at its default size, and the difficulty went back to
-//! Easy however you had left it. This module is the file that remembers those
-//! three, written as JSON to the platform's own configuration directory:
+//! window reopened centred at its default size, the difficulty went back to
+//! Easy however you had left it, and every point you had ever scored went with
+//! it. This module is the file that remembers all of that, written as JSON to
+//! the platform's own configuration directory:
 //!
 //! | Platform | Path |
 //! | --- | --- |
@@ -31,6 +32,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::game::Difficulty;
+use crate::stats::Stats;
 
 /// The directory the file is written into, under the platform's config
 /// directory. Named after the crate, like every other well-behaved app.
@@ -179,6 +181,16 @@ pub struct Settings {
     pub difficulty: Option<Difficulty>,
     /// Where the window was. `None` until it has been opened once.
     pub window: Option<WindowFrame>,
+    /// The lifetime score, streak and tally — see [`crate::stats`].
+    ///
+    /// Added after the first released format, and needing no version bump to
+    /// be so: the container-level `#[serde(default)]` above means a file
+    /// written before this field existed simply reads as
+    /// [`Stats::default`]. `stats_or_default` then keeps a *malformed* value
+    /// from costing the rest of the file, which is the same
+    /// never-fail-loudly rule the module doc states.
+    #[serde(deserialize_with = "stats_or_default")]
+    pub stats: Stats,
 }
 
 impl Settings {
@@ -253,6 +265,20 @@ impl Settings {
     }
 }
 
+/// Read the stats, or hand back an empty tally if they are unreadable.
+///
+/// A wrong-typed `"stats"` — a number, a string, an object whose fields are
+/// the wrong shape — would otherwise fail the whole parse and throw away the
+/// theme, the window and the difficulty along with it. Losing a score nobody
+/// can read is bad enough; losing the rest of the file with it is worse.
+///
+/// The value is read as raw JSON first because that is what makes "try, and
+/// fall back" possible at all: a `Deserializer` cannot be attempted twice.
+fn stats_or_default<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Stats, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 /// Serde for `Option<Difficulty>`, stored as the name from the original's
 /// Difficulty menu: `"difficulty": "Insane"`.
 ///
@@ -292,6 +318,8 @@ mod difficulty_by_name {
 mod tests {
     use super::*;
 
+    use crate::game::{GameResult, MatchOutcome};
+
     /// A single 1920x1080 display with its top left corner at the origin, which
     /// is what one ordinary monitor looks like to gpui.
     const PRIMARY: Rect = Rect {
@@ -317,6 +345,7 @@ mod tests {
         assert_eq!(settings.theme, ThemeChoice::Dark);
         assert_eq!(settings.difficulty, None);
         assert_eq!(settings.window, None);
+        assert_eq!(settings.stats, Stats::default());
     }
 
     #[test]
@@ -328,6 +357,7 @@ mod tests {
                 rect: Rect::new(120., 64., 1000., 760.),
                 maximized: true,
             }),
+            stats: Stats::default(),
         };
 
         let json = serde_json::to_string_pretty(&settings).expect("settings should serialize");
@@ -341,6 +371,7 @@ mod tests {
             theme: ThemeChoice::Light,
             difficulty: Some(Difficulty::Medium),
             window: None,
+            stats: Stats::default(),
         };
 
         let json = serde_json::to_string(&settings).expect("settings should serialize");
@@ -414,6 +445,97 @@ mod tests {
                 maximized: false,
             })
         );
+    }
+
+    // ----------------------------------------------------------- the stats
+
+    /// A tally with something in every part of it, per-difficulty buckets
+    /// included, so a round trip has something to lose.
+    fn played_stats() -> Stats {
+        let mut stats = Stats::default();
+        stats.record_word(Some(Difficulty::Medium), GameResult::Lost, 0);
+        // A clean Insane win, then a scrappy Easy one, then a custom list —
+        // three in a row, so the streak and its bonus are in there too.
+        stats.record_word(Some(Difficulty::Insane), GameResult::Won, 6);
+        stats.record_word(Some(Difficulty::Easy), GameResult::Won, 2);
+        stats.record_word(None, GameResult::Won, 4);
+        stats.record_match(Some(Difficulty::Insane), MatchOutcome::Win);
+        stats
+    }
+
+    #[test]
+    fn a_file_from_before_the_stats_existed_reads_as_an_empty_tally() {
+        let settings = Settings::parse(r#"{"theme": "light", "difficulty": "Hard"}"#);
+
+        assert_eq!(settings.theme, ThemeChoice::Light);
+        assert_eq!(settings.difficulty, Some(Difficulty::Hard));
+        assert_eq!(settings.stats, Stats::default());
+    }
+
+    #[test]
+    fn stats_survive_a_round_trip() {
+        let settings = Settings {
+            stats: played_stats(),
+            ..Settings::default()
+        };
+
+        let json = serde_json::to_string_pretty(&settings).expect("settings should serialize");
+        let parsed = Settings::parse(&json);
+
+        assert_eq!(parsed, settings, "{json}");
+        // Spelled out, because a bucket read back as an empty default would
+        // still compare equal if the whole tally had been lost.
+        assert_eq!(
+            parsed.stats.for_difficulty(Difficulty::Insane).points,
+            settings.stats.for_difficulty(Difficulty::Insane).points
+        );
+        assert_eq!(parsed.stats.streak, 3);
+    }
+
+    #[test]
+    fn the_file_stores_the_stats_by_name() {
+        let settings = Settings {
+            stats: played_stats(),
+            ..Settings::default()
+        };
+
+        let json = serde_json::to_string(&settings).expect("settings should serialize");
+
+        assert!(json.contains(r#""stats":{"points":"#), "{json}");
+        assert!(json.contains(r#""best_streak":3"#), "{json}");
+        assert!(json.contains(r#""by_difficulty":{"Easy":"#), "{json}");
+        assert!(json.contains(r#""Insane":{"points":440"#), "{json}");
+    }
+
+    #[test]
+    fn an_unknown_difficulty_in_the_stats_is_ignored() {
+        let settings = Settings::parse(
+            r#"{"stats": {"points": 12, "by_difficulty": {"Trivial": {"points": 9}}}}"#,
+        );
+
+        assert_eq!(settings.stats.points, 12);
+        for difficulty in Difficulty::ALL {
+            assert_eq!(
+                settings.stats.for_difficulty(difficulty).points,
+                0,
+                "{difficulty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn garbage_stats_fall_back_to_an_empty_tally_without_losing_the_rest() {
+        for text in [
+            r#"{"theme": "light", "stats": 7}"#,
+            r#"{"theme": "light", "stats": "none"}"#,
+            r#"{"theme": "light", "stats": {"points": "lots"}}"#,
+            r#"{"theme": "light", "stats": []}"#,
+        ] {
+            let settings = Settings::parse(text);
+
+            assert_eq!(settings.stats, Stats::default(), "{text}");
+            assert_eq!(settings.theme, ThemeChoice::Light, "{text}");
+        }
     }
 
     // -------------------------------------------------------- the geometry
