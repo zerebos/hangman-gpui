@@ -43,14 +43,25 @@ cargo test
 
 ## Layout
 
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 26 unit
-  tests in-file. Keep it that way; UI work should not need to touch it.
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 28 unit
+  tests in-file. Keep it that way; UI work should not need to touch it. Its
+  `words_won`/`words_lost` are *per-match* counters that exist only so
+  `finish_match` can derive a `MatchOutcome`; they reset with the match, and
+  they are not a score.
 - `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the artwork element.
+- `src/stats.rs` — points, streaks and the lifetime tally, with 25 in-file
+  tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
+  for the score live so that `game.rs` needs none: `Difficulty` is mapped by
+  hand there, exactly as `settings.rs` does it. `Stats` is the persisted value,
+  `Session` is what the view holds, and all the arithmetic is in here rather
+  than in the UI. The streak spans matches, difficulties and launches on
+  purpose — only a lost word ends it — so nothing in `game.rs` may reset it.
 - `src/settings.rs` — the JSON file that remembers the theme, the window
-  geometry and the difficulty. Like `game.rs` it holds **no GPUI types** and is
-  covered by 20 in-file tests; the conversions to `ThemeMode` and
+  geometry, the difficulty and the `stats`. Like `game.rs` it holds **no GPUI
+  types** and is covered by 25 in-file tests; the conversions to `ThemeMode` and
   `Bounds<Pixels>` live in `src/ui/mod.rs` instead. Nothing in it may fail
-  loudly: every read error falls back to `Settings::default()`.
+  loudly: every read error falls back to `Settings::default()`, and a malformed
+  `stats` key falls back on its own rather than taking the file with it.
 - `src/audio.rs` — **two** implementations of `Audio` with identical public
   signatures behind `#[cfg(feature = "sound")]` / `#[cfg(not(...))]`: a real one
   and a zero-sized no-op. That is what keeps `#[cfg]` out of every UI call site.

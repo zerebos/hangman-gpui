@@ -11,8 +11,8 @@ layout, the same two sound cues and the same (slightly unhinged) alert messages
 │ Difficulty: [Easy][Medium][Hard][Insane]  [Change Word]│
 ├──────────────────────────────┬─────────────────────────┤
 │ Hangman!                     │        ┌────────┐       │
-│ You WIN!                     │        │        │       │
-│ Wins: 3  Losses: 1           │        │       (o)      │
+│ You WIN! +330                │        │        │       │
+│ Score: 940  Streak: 3        │        │       (o)      │
 │ Word:  A P P L E             │        │        |       │
 │ Letters Available:           │       ─┴─      / \      │
 │ [A][B][C][D][E][F][G]        │      ═══════            │
@@ -22,8 +22,9 @@ layout, the same two sound cues and the same (slightly unhinged) alert messages
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 26 unit tests), [`src/settings.rs`](src/settings.rs) is the equally
-UI-free file that remembers your choices between launches (with 20 more), and
+engine (with 28 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
+keeps the streak (25 more), [`src/settings.rs`](src/settings.rs) is the equally
+UI-free file that remembers your choices between launches (25 more), and
 [`src/ui/`](src/ui/) is everything GPUI. The word lists, the original's gallows
 artwork and its two mp3 cues live in [`assets/`](assets/) and are compiled into
 the binary, so there is nothing to install next to the executable.
@@ -125,9 +126,37 @@ usual place for your platform:
       "height": 760.0
     },
     "maximized": false
+  },
+  "stats": {
+    "points": 4820,
+    "words_won": 31,
+    "words_lost": 9,
+    "streak": 3,
+    "best_streak": 11,
+    "matches_won": 3,
+    "matches_lost": 1,
+    "matches_tied": 0,
+    "by_difficulty": {
+      "Easy": { "points": 1130, "words_won": 10, "words_lost": 0,
+                "matches_won": 1, "matches_lost": 0, "matches_tied": 0 },
+      "Medium": { "points": 0, "words_won": 0, "words_lost": 0,
+                  "matches_won": 0, "matches_lost": 0, "matches_tied": 0 },
+      "Hard": { "points": 0, "words_won": 0, "words_lost": 0,
+                "matches_won": 0, "matches_lost": 0, "matches_tied": 0 },
+      "Insane": { "points": 3690, "words_won": 21, "words_lost": 9,
+                  "matches_won": 2, "matches_lost": 1, "matches_tied": 0 }
+    }
   }
 }
 ```
+
+`stats` is the lifetime tally behind the **Stats** button in the toolbar, and it
+is as forgiving as the rest of the file: a `stats` key that is missing — every
+settings file written before this feature existed — reads as an empty tally, a
+`by_difficulty` name this version does not know is dropped, and one that holds
+nonsense falls back to zeroes without costing you the theme or the window. Words
+played from a word list of your own count in the totals and the streak but in
+none of the four buckets, because they belong to no difficulty.
 
 Nothing in there is required: delete the file, edit it by hand, or leave it on a
 read-only disk, and the game falls back to its defaults — dark, centred, Easy —
@@ -135,9 +164,11 @@ saying so on stderr at worst. A saved window that no longer fits the monitors
 you have is resized and moved back on screen rather than trusted, so unplugging
 a second monitor can never strand the window somewhere you cannot reach it.
 
-Match scores are *not* saved: wins and losses belong to the match you are
-playing and reset with it. Lifetime stats are part of the scoring rework in
-roadmap item 2.
+The lifetime stats — points, the streak, the best streak, and the win/loss
+tally broken down by difficulty — are saved in the same file, and written the
+moment a word ends. The score of the *match* you are playing is not: it belongs
+to the match and starts again from zero when you pick a difficulty or load a new
+word list. The streak deliberately does neither, which is the point of it.
 
 ## Controls
 
@@ -148,6 +179,7 @@ roadmap item 2.
 | Give up on the current word (counts as a loss) | `Change Word` button, or `Ctrl+N` |
 | Load your own word list | `Open word list…` button, or `Ctrl+O` |
 | Change difficulty (starts a fresh match) | The Easy / Medium / Hard / Insane buttons |
+| Show the lifetime stats | The `Stats` button in the toolbar |
 | Quit | Close the window |
 
 A word list is a plain `.txt` file with one word per line. Lines are trimmed and
@@ -157,6 +189,41 @@ A *match* is one pass through the whole word list — ten words for the bundled
 lists, drawn at random without repeats. When the list runs out the match is
 scored (more wins than losses, fewer, or a tie) and you pick a difficulty or a
 new word list to start over.
+
+## Scoring
+
+Solving a word is worth points, and the number is small enough to work out in
+your head while you play:
+
+```
+(50 + 10 × guesses left) × difficulty weight  +  25 × streak steps
+```
+
+| Term | What it is |
+| --- | --- |
+| `50` | the flat rate for solving a word at all |
+| `10 × guesses left` | your unspent budget, so a clean win beats a scrape by 60 |
+| difficulty weight | Easy 1, Medium 2, Hard 3, Insane 4 — and 1 for a word list of your own |
+| streak steps | `min(streak − 1, 4)`, so the bonus builds to 100 and stops there |
+
+The best a single word can do is a clean Insane win on a streak:
+`(50 + 60) × 4 + 100` = **540**. The worst is **60**: an Easy word solved on the
+very last guess you had, with no streak behind it. A word you lose, or give up
+on, is worth nothing.
+
+The **streak** is how many words you have solved in a row. It is the one number
+here that survives everything: it carries across the end of a match, across a
+difficulty change, across loading a new word list and across quitting the game.
+Only failing a word puts it back to zero — and `Change Word` is failing a word.
+The **best streak** is the high-water mark, and nothing but the `Reset stats`
+button lowers it.
+
+`SCORE` on the scoreboard is what the *match* on screen has earned so far; it
+starts again at zero when you pick a difficulty or load a word list, and is
+quoted in the end-of-match line. Everything else — lifetime points, words won
+and lost, win rate, both streaks, the match tally and a breakdown of all of it
+per difficulty — is behind the `Stats` button in the toolbar and is
+[saved between launches](#settings).
 
 ## Differences from the original
 
@@ -180,8 +247,13 @@ new word list to start over.
   `You WIN!` / `Bring Add/Drop Form!`, the cue plays, and the footer shows the
   match summary.
 - **The window resizes.** The original was a fixed, non-resizable 800×400.
-- **Small addition:** a muted `Word n of 10` counter next to the score, so you can
-  tell how much of a match is left.
+- **Scoring replaced the tally.** The original's scoreboard was two numbers,
+  `Wins` and `Losses` for the match in hand. Here it is the match's points, the
+  current streak, the best streak ever, and a muted `Word n of 10` counter so you
+  can tell how much of a match is left. See [Scoring](#scoring).
+- **Small addition:** lifetime stats. The original remembered nothing between
+  launches; this one keeps every point, both streaks and the win/loss tally,
+  broken down by difficulty, behind the toolbar's `Stats` button.
 
 ## Roadmap
 
@@ -193,8 +265,13 @@ the order they were argued about rather than in any committed order.
 
 1. **Hints, at a cost.** Reveal an unguessed letter in exchange for a wrong
    guess, or out of a small per-match budget.
-2. **Scoring and streaks.** Retire the bare `wins` / `losses` counters in favour
-   of points per word, plus a current and a best streak.
+2. **Scoring and streaks** *(done).* The bare `wins` / `losses` counters are
+   gone. A solved word now scores on the guesses you had left and the difficulty
+   you were playing, a run of solved words builds a bonus on top, and the
+   scoreboard shows the match's points beside the current and best streak. The
+   streak spans matches, difficulties and launches; only failing a word ends it.
+   The lifetime tally lives behind the toolbar's `Stats` button and is saved with
+   the rest of the settings — see [Scoring](#scoring).
 3. **Structured word packs.** Move the four ten-word lists into a serde format
    that carries a category, a hint and a clue per word, so a match no longer
    exhausts the pool.
@@ -218,9 +295,9 @@ the order they were argued about rather than in any committed order.
 
 8. **Persist settings** *(done).* The theme, the window geometry and the chosen
    difficulty are written to a JSON file in the platform's config directory and
-   restored at startup — see [Settings](#settings). Stats are not: `wins` and
-   `losses` are per-match counters that reset with the match, so a number worth
-   keeping between launches waits on item 2.
+   restored at startup — see [Settings](#settings). Item 2 added the lifetime
+   stats to the same file; the match's own score is still the one thing that is
+   not kept, because it belongs to the match and dies with it.
 9. **Make the UI testable.** Pull the pure helpers out of
    [`src/ui/mod.rs`](src/ui/mod.rs) — which has no tests at all — and cover them.
 
