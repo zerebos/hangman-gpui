@@ -3,7 +3,7 @@
 //! The window is a title bar (wordmark plus a light/dark toggle), a toolbar
 //! strip carrying the original's `Game` menu, and a body split into a left
 //! play column — scoreboard, word, keyboard, result — and a right stage panel
-//! holding the gallows artwork. Every colour comes from a gpui-kit theme
+//! holding the gallows drawing. Every colour comes from a gpui-kit theme
 //! token, so both themes are usable and neither is hard-coded.
 
 mod gallows;
@@ -61,7 +61,7 @@ const KEY_GAP: Pixels = px(6.);
 /// "DIFFICULTY" heading rather than for the four short names under it.
 const BREAKDOWN_LABEL_WIDTH: Pixels = px(88.);
 
-/// The stage column's width: the 300px artwork plus its panel padding.
+/// The stage column's width: the 300px drawing plus its panel padding.
 const STAGE_WIDTH: Pixels = px(332.);
 
 /// How wide one character of the word is, and how tall its glyph row is.
@@ -1446,7 +1446,7 @@ impl HangmanView {
         })
     }
 
-    /// The gallows stage: the artwork, plus the wrong-guess meter under it.
+    /// The gallows stage: the drawing, plus the wrong-guess meter under it.
     fn render_stage(&self, cx: &Context<Self>) -> impl IntoElement {
         let wrong = self.game.wrong_guesses();
 
@@ -1474,17 +1474,17 @@ impl HangmanView {
                             .child(format!("{wrong} / {MAX_WRONG_GUESSES}")),
                     ),
             )
-            // The artwork sits on the panel itself: the gallows is drawn in
-            // wood browns with a cartoon keyline, which reads on either theme.
-            // The column stretches to the body's height, so this group takes
-            // the slack and stays centred rather than clinging to the top.
+            // The drawing sits on the panel itself: every line takes its
+            // colour from the theme, so it reads on either one. The column
+            // stretches to the body's height, so this group takes the slack
+            // and stays centred rather than clinging to the top.
             .child(
                 v_flex()
                     .flex_1()
                     .justify_center()
                     .items_center()
                     .gap_4()
-                    .child(gallows(wrong))
+                    .child(gallows(wrong, MAX_WRONG_GUESSES))
                     .child(
                         // Six pips, one per wrong guess: the score the drawing
                         // is keeping, in a form you can count at a glance.

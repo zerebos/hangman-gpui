@@ -1,9 +1,12 @@
 # hangman-gpui
 
 A Rust + [GPUI](https://www.gpui.rs/) port of [`zerebos/Hangman`](https://github.com/zerebos/Hangman),
-a 2015 Java/Swing hangman game. Same rules, same word lists, same artwork, same
-layout, the same two sound cues and the same (slightly unhinged) alert messages
-— rebuilt with [gpui-kit](https://gpui-kit.com) instead of Swing.
+a 2015 Java/Swing hangman game. Same rules, same word lists, same layout, the
+same two sound cues and the same (slightly unhinged) alert messages — rebuilt
+with [gpui-kit](https://gpui-kit.com) instead of Swing. The gallows is the one
+thing that is not the original's: it is drawn line by line at run time rather
+than shipped as pictures. See
+[Differences from the original](#differences-from-the-original).
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -24,10 +27,11 @@ layout, the same two sound cues and the same (slightly unhinged) alert messages
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
 engine (with 28 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (25 more), [`src/settings.rs`](src/settings.rs) is the equally
-UI-free file that remembers your choices between launches (25 more), and
-[`src/ui/`](src/ui/) is everything GPUI. The word lists, the original's gallows
-artwork and its two mp3 cues live in [`assets/`](assets/) and are compiled into
-the binary, so there is nothing to install next to the executable.
+UI-free file that remembers your choices between launches (25 more),
+[`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
+(32 more), and [`src/ui/`](src/ui/) is everything GPUI. The word lists and the
+two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
+there is nothing to install next to the executable.
 
 ## Building and running
 
@@ -246,6 +250,13 @@ per difficulty — is behind the `Stats` button in the toolbar and is
   (and the sound) for that game. Here both fire: the alert line shows
   `You WIN!` / `Bring Add/Drop Form!`, the cue plays, and the footer shows the
   match summary.
+- **The gallows is drawn, not drawn *once*.** The original shipped seven PNGs
+  and swapped between them. Here the picture is geometry — a post, a beam, a
+  brace, a rope and up to ten body parts — stroked onto a `canvas()` every
+  frame. It stays sharp at any size, takes its colours from the theme instead
+  of being a fixed image that only suits one, draws each new part on rather
+  than cutting to the next frame, and is not tied to a budget of six wrong
+  guesses.
 - **The window resizes.** The original was a fixed, non-resizable 800×400.
 - **Scoring replaced the tally.** The original's scoreboard was two numbers,
   `Wins` and `Losses` for the match in hand. Here it is the match's points, the
@@ -276,18 +287,24 @@ the order they were argued about rather than in any committed order.
    that carries a category, a hint and a clue per word, so a match no longer
    exhausts the pool.
 4. **Difficulty that changes the guess budget.** `MAX_WRONG_GUESSES` is a hard 6
-   today. Blocked on item 6: the seven artwork frames assume exactly six.
+   today. Item 6 unblocked it: the drawing now takes the budget as an argument
+   and finishes the figure on the last guess whatever that budget is, so all
+   that is left is letting each difficulty pick one.
 
 ### UI and UX
 
-5. **Animation and game feel** *(done).* Cross-fade the gallows, shake the
+5. **Animation and game feel** *(done).* Draw the newest bit of the gallows on
+   — a cross-fade between frames until item 6 replaced the frames — shake the
    word on a wrong guess, fade the cells a correct guess turns over up into
    place, stagger-reveal the letters on a win, pulse the wrong-guess pips, and
    settle a letter key into the colour its guess earned it. Still snapping: the
    keys that go out of play when the game ends.
-6. **Draw the gallows procedurally**, with `canvas()` and `PathBuilder`, so it
-   scales, follows the theme and copes with any guess budget. The trade-off is
-   real: it retires the bundled artwork.
+6. **Draw the gallows procedurally** *(done).* The seven pre-rendered PNGs are
+   gone; [`src/gallows.rs`](src/gallows.rs) describes the picture as polylines
+   and `src/ui/gallows.rs` paints them with `canvas()` and `PathBuilder`. It
+   scales to whatever room it is given, takes all three of its colours from the
+   theme, and spreads its body parts over any guess budget — which is what
+   unblocked item 4. The trade-off was real: it retired the bundled artwork.
 7. **Keyboard hints.** Surface the shortcuts in the window itself with gpui-kit's
    `Kbd` and `Tooltip::action`.
 

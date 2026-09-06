@@ -48,7 +48,17 @@ cargo test
   `words_won`/`words_lost` are *per-match* counters that exist only so
   `finish_match` can derive a `MatchOutcome`; they reset with the match, and
   they are not a score.
-- `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the artwork element.
+- `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the element that
+  paints the gallows.
+- `src/gallows.rs` — the gallows *drawing*, as plain coordinates: polylines in
+  a fixed 300×350 design box, which body part belongs to which stage, and the
+  transform that fits the box into the rectangle the window gives it. **No GPUI
+  types**, like `game.rs`, with 32 in-file tests. Its partner `src/ui/gallows.rs`
+  is the only thing that turns any of it into `PathBuilder` paths, and it holds
+  the colours (from `cx.theme()`) and the draw-on animation. Keep the split:
+  geometry that a test can check belongs here, not in the 1,600-line view.
+  Nothing in either file assumes a budget of six wrong guesses — `parts_drawn`
+  takes the budget as an argument, which is what roadmap item 4 needs.
 - `src/stats.rs` — points, streaks and the lifetime tally, with 25 in-file
   tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
   for the score live so that `game.rs` needs none: `Difficulty` is mapped by
@@ -137,13 +147,20 @@ missing import, not a wrong method name. Note that rustc unhelpfully suggests
 "there is a method `font_semibold` with a similar name" — that one is on the
 same unimported trait and won't compile either.
 
-### 5. Images need no `AssetSource`
+### 5. Images need no `AssetSource` — but nothing here draws one any more
 
-`include_bytes!` → `Image::from_bytes` → `img()`, as in `src/ui/gallows.rs`.
-Bytes you already hold go straight into the renderer's decode cache, keyed on
-content hash; an `AssetSource` is only for resolving *paths*. This matters
-because the app's one `with_assets` slot is already spent on gpui-kit's own
-icon assets (`main.rs`), which the title bar's window-control buttons need.
+The gallows used to be seven PNGs and was the only image in the app; it is
+drawn with `canvas()` and `PathBuilder` now, so the tree has no `img()` call
+left. Keep the fact to hand anyway, because the obvious next move when you do
+want a picture is the wrong one:
+
+`include_bytes!` → `Image::from_bytes` → `img()` is all it takes. Bytes you
+already hold go straight into the renderer's decode cache, keyed on content
+hash; an `AssetSource` is only for resolving *paths*. This matters because the
+app's one `with_assets` slot is already spent on gpui-kit's own icon assets
+(`main.rs`), which the title bar's window-control buttons need — so an image
+that needed a second one would be stuck. The last version that did it this way
+is the parent of the commit that removed `assets/images/`.
 
 ### 6. The title bar's close button does not go through `on_window_should_close`
 
@@ -172,3 +189,24 @@ same code path as a real click — it reported the theme toggle in gotcha 1 as
 working while it was completely broken. If you must verify a click headlessly,
 send **press, move, release** separately and compare before/after screenshots
 taken from a single process run.
+
+### 8. Animating what a `canvas()` paints needs a component, not a canvas
+
+`with_animation` hands its animator the *element* and wants one back
+(`animator: impl Fn(Self, f32) -> Self`, `gpui-pre-0.3.3/src/elements/animation.rs:83`).
+That works for anything the builder API can restyle — opacity, size, offset —
+but `canvas()` takes its paint callback as a boxed `FnOnce` when it is *built*
+(`src/elements/canvas.rs:10-19`), so there is nothing left to change afterwards
+and no way to feed it the frame's `delta`.
+
+The way through is `src/ui/gallows.rs`: a small `RenderOnce` struct holding the
+drawing's parameters, with the canvas built inside its `render`. Animating the
+struct rewrites a field, and the canvas is rebuilt from it every frame.
+
+Two smaller ones from the same file:
+
+- `#[derive(IntoElement)]` expands to `gpui::IntoElement`, and this crate has no
+  dependency spelled `gpui` — `use gpui_kit::gpui;` in the module makes the
+  derive resolve. Same reason `gpui_kit` re-exports its own `actions!`.
+- `Pixels`' tuple field is private outside gpui. Use `Pixels::as_f32()`; the
+  `.0` you will see in gpui-kit's own source only compiles inside gpui-kit.
