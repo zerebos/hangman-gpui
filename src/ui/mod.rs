@@ -23,11 +23,18 @@ use crate::audio::Audio;
 use crate::game::{
     Cell, Difficulty, Game, GameResult, GuessResult, MAX_WRONG_GUESSES, MatchOutcome,
 };
+use crate::settings::{Rect, Settings, ThemeChoice, WindowFrame};
 use gallows::gallows;
 
 /// The key context this view claims. Key bindings registered against it (see
 /// `main.rs`) only fire while something inside the view has focus.
 pub const KEY_CONTEXT: &str = "Hangman";
+
+/// The size the window opens at when there is nothing saved to restore.
+pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1000.), px(760.));
+/// The smallest the window may be. Below this the toolbar wraps into the board
+/// and the stage column starts clipping the artwork.
+pub const MIN_WINDOW_SIZE: Size<Pixels> = size(px(880.), px(660.));
 
 // The original's alert strings, verbatim.
 const GAME_LOST: &str = "Bring Add/Drop Form!";
@@ -59,6 +66,88 @@ const WORD_CELL_HEIGHT: Pixels = px(38.);
 const WORD_GAP: Pixels = px(10.);
 /// The rule drawn under each guessable character.
 const WORD_RULE_HEIGHT: Pixels = px(3.);
+
+// ---------------------------------------------------------------- settings
+//
+// `crate::settings` is deliberately free of UI types so it can be tested
+// without a window, which leaves the translation between its plain data and
+// gpui's own types here — in the one module that already speaks both.
+
+impl From<ThemeChoice> for ThemeMode {
+    fn from(choice: ThemeChoice) -> Self {
+        match choice {
+            ThemeChoice::Dark => ThemeMode::Dark,
+            ThemeChoice::Light => ThemeMode::Light,
+        }
+    }
+}
+
+impl From<ThemeMode> for ThemeChoice {
+    fn from(mode: ThemeMode) -> Self {
+        if mode.is_dark() {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        }
+    }
+}
+
+/// Where to open the window: where the last run left it, if that still lands on
+/// a display that exists, and the centred default otherwise.
+///
+/// Called from `main.rs` before the window exists, which is why it takes the
+/// app rather than a window.
+pub fn window_bounds(settings: &Settings, cx: &App) -> WindowBounds {
+    // `visible_bounds` is the part of each display a window can actually use:
+    // it leaves out the taskbar, the dock and any other reserved strip.
+    let displays: Vec<Rect> = cx
+        .displays()
+        .iter()
+        .map(|display| to_rect(display.visible_bounds()))
+        .collect();
+
+    let restored = settings.window.and_then(|frame| {
+        let rect = frame.rect.fit_onto(
+            &displays,
+            MIN_WINDOW_SIZE.width.as_f32(),
+            MIN_WINDOW_SIZE.height.as_f32(),
+        )?;
+        Some((to_bounds(rect), frame.maximized))
+    });
+
+    match restored {
+        Some((bounds, true)) => WindowBounds::Maximized(bounds),
+        Some((bounds, false)) => WindowBounds::Windowed(bounds),
+        None => WindowBounds::centered(DEFAULT_WINDOW_SIZE, cx),
+    }
+}
+
+/// The window as it stands right now, in the form the settings file stores.
+fn window_frame(window: &Window) -> WindowFrame {
+    let bounds = window.window_bounds();
+    WindowFrame {
+        // For a maximized or full-screen window this is the *restore* size, the
+        // one it springs back to — which is the size worth remembering.
+        rect: to_rect(bounds.get_bounds()),
+        maximized: !matches!(bounds, WindowBounds::Windowed(_)),
+    }
+}
+
+fn to_rect(bounds: Bounds<Pixels>) -> Rect {
+    Rect::new(
+        bounds.origin.x.as_f32(),
+        bounds.origin.y.as_f32(),
+        bounds.size.width.as_f32(),
+        bounds.size.height.as_f32(),
+    )
+}
+
+fn to_bounds(rect: Rect) -> Bounds<Pixels> {
+    Bounds {
+        origin: point(px(rect.x), px(rect.y)),
+        size: size(px(rect.width), px(rect.height)),
+    }
+}
 
 // ------------------------------------------------------------------ motion
 //
@@ -266,16 +355,40 @@ pub struct HangmanView {
     /// no-op, so the calls below need no `#[cfg]` of their own. It has to be
     /// owned here rather than created per clip: it holds the output device open.
     audio: Audio,
+    /// The choices that outlive the process, as they were loaded at startup and
+    /// as they stand now. Every field that changes is written straight back to
+    /// disk from the handler that changed it, so this is only ever a mirror of
+    /// the file rather than state waiting to be flushed.
+    settings: Settings,
 }
 
 impl HangmanView {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// Build the view from the settings the last run left behind, which
+    /// `main.rs` has already used to pick the theme and the window's bounds.
+    pub fn new(settings: Settings, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // The window's own geometry is the one setting with no moment of
+        // change to save on: a drag or a resize reports every intermediate
+        // pixel, so writing there would mean a file write per frame. Its
+        // settled value is the one it closes at, so that is when it is written.
+        //
+        // Closing the window takes two different routes, and the game should
+        // remember its place whichever one is taken. The operating system's own
+        // close — the title bar's X on Windows and macOS, the traffic light, the
+        // window menu, Alt+F4 — arrives here.
+        let view = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            view.update(cx, |view, _| view.save_window_frame(window))
+                .ok();
+            true
+        });
+
         Self {
-            game: Game::new(Difficulty::default()),
+            game: Game::new(settings.difficulty.unwrap_or_default()),
             notice: None,
             last_guess: None,
             focus_handle: cx.focus_handle(),
             audio: Audio::new(),
+            settings,
         }
     }
 
@@ -340,7 +453,16 @@ impl HangmanView {
         self.game.set_difficulty(difficulty);
         self.notice = None;
         self.last_guess = None;
+        self.settings.difficulty = Some(difficulty);
+        self.settings.save();
         cx.notify();
+    }
+
+    /// Remember where the window is, on its way out. See [`HangmanView::new`]
+    /// for why this is the moment the geometry is written.
+    fn save_window_frame(&mut self, window: &Window) {
+        self.settings.window = Some(window_frame(window));
+        self.settings.save();
     }
 
     /// Flip the whole application between the light and dark palettes.
@@ -355,6 +477,8 @@ impl HangmanView {
             ThemeMode::Dark
         };
         Theme::change(next, Some(window), cx);
+        self.settings.theme = next.into();
+        self.settings.save();
         cx.notify();
     }
 
@@ -500,6 +624,15 @@ impl HangmanView {
         let dark = cx.theme().is_dark();
 
         TitleBar::new()
+            // The other route out: on Linux gpui-kit draws its own window
+            // controls and its X calls `window.remove_window()` directly, which
+            // never reaches the handler in `HangmanView::new`. This hook is
+            // where that button ends up instead — and it is ignored outright on
+            // Windows and macOS, where the control buttons are the system's.
+            .on_close_window(cx.listener(|this, _, window, _| {
+                this.save_window_frame(window);
+                window.remove_window();
+            }))
             .child(
                 h_flex()
                     .gap_2()

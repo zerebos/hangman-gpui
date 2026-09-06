@@ -12,6 +12,15 @@ sound = ["dep:rodio"]
 [dependencies]
 gpui-kit = "0.6.0"
 rand = "0.10"
+# Settings persistence. None of the three is new to the dependency tree: gpui
+# itself already pulls in `serde` and `serde_json`, and `dirs` — the one that
+# knows where each platform keeps its config — arrives via `shellexpand`, under
+# gpui-kit's asset macros. Naming them here reuses those, and adds nothing else.
+# `dirs` is a thin wrapper over the platform APIs with no dependencies of its
+# own beyond `dirs-sys`.
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # `playback` pulls in cpal; `mp3` decodes via symphonia. The rest of rodio's
 # default features (recording, mp4, vorbis, flac, wav) are not wanted here.
 rodio = { version = "0.22", default-features = false, features = [
