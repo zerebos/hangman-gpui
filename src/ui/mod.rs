@@ -1476,19 +1476,27 @@ impl HangmanView {
             )
             // The drawing sits on the panel itself: every line takes its
             // colour from the theme, so it reads on either one. The column
-            // stretches to the body's height, so this group takes the slack
-            // and stays centred rather than clinging to the top.
+            // stretches to the body's height and the drawing takes the slack,
+            // with the pips settling underneath it.
+            //
+            // `w_full` is load-bearing. The panel centres its children, so
+            // without a width of its own this column is sized to its content —
+            // and its only content with a width is the 84px pip row, because a
+            // percentage width (the drawing's `w_full`) measures as nothing
+            // when the container's width is what is being measured. The
+            // drawing was handed an 84px-wide box for a 300px-wide panel and
+            // came out at 28% of the size it should have been.
             .child(
                 v_flex()
+                    .w_full()
                     .flex_1()
-                    .justify_center()
                     .items_center()
                     .gap_4()
                     .child(gallows(wrong, MAX_WRONG_GUESSES))
                     .child(
                         // Six pips, one per wrong guess: the score the drawing
                         // is keeping, in a form you can count at a glance.
-                        h_flex().gap_1p5().children(
+                        h_flex().flex_none().gap_1p5().children(
                             (0..MAX_WRONG_GUESSES).map(|step| Self::render_pip(step, wrong, cx)),
                         ),
                     ),

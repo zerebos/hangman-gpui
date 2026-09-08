@@ -29,7 +29,7 @@ engine (with 28 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (25 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(32 more), and [`src/ui/`](src/ui/) is everything GPUI. The word lists and the
+(35 more), and [`src/ui/`](src/ui/) is everything GPUI. The word lists and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
 

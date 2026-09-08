@@ -41,7 +41,13 @@ const DRAW_ON: Duration = Duration::from_millis(300);
 /// over however many guesses there are, so the figure is always finished on the
 /// last one.
 pub fn gallows(wrong: usize, budget: usize) -> impl IntoElement {
-    div().w_full().h(px(art::DESIGN_HEIGHT)).child(
+    // `flex_1`, not a fixed height: the drawing is meant to take whatever the
+    // stage column has left over, and [`art::fit`] sizes the picture to that.
+    // The width has to be spelled out too — a column that sizes itself to its
+    // content hands a `w_full` child nothing to be a percentage *of*, which is
+    // exactly how this ended up 84px wide in review. `min_h` is only a floor
+    // for a window shorter than anything the app will open at.
+    div().w_full().flex_1().min_h(px(160.)).child(
         Drawing {
             wrong,
             budget,

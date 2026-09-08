@@ -6,10 +6,13 @@
 //! functions return into `PathBuilder` paths and paints them.
 //!
 //! The picture is described once, in a fixed [`DESIGN_WIDTH`] ×
-//! [`DESIGN_HEIGHT`] box, and [`fit`] maps that box onto whatever rectangle the
+//! [`DESIGN_HEIGHT`] box, and [`fit`] maps it onto whatever rectangle the
 //! window ends up giving it. Nothing is measured in real pixels until then,
 //! which is what makes the drawing resolution-independent: it is re-tessellated
-//! at the size it is drawn at instead of being a bitmap someone scaled.
+//! at the size it is drawn at instead of being a bitmap someone scaled. What
+//! `fit` sizes to the rectangle is the [ink box](INK_LEFT) rather than the
+//! design box, so the panel is filled by the drawing and not by the empty
+//! margin the coordinates happen to carry.
 //!
 //! A drawing is a list of [`Stroke`]s, and a stroke is a polyline — even the
 //! head, which is a circle flattened into one. That single representation is
@@ -91,6 +94,43 @@ const FRAME_WIDTH: f32 = 7.0;
 const ROPE_WIDTH: f32 = 4.0;
 const FIGURE_WIDTH: f32 = 6.0;
 const FACE_WIDTH: f32 = 3.5;
+
+// ----------------------------------------------------------------- the ink
+
+/// The rectangle the ink actually covers inside the design box, with half of
+/// every stroke's width included so nothing is clipped at the edge.
+///
+/// The design box has slack in it: nothing is ever drawn in its right-hand
+/// fifth, and there is a band of air above the beam and below the ground.
+/// Fitting the *design box* to the panel therefore spends part of the panel on
+/// emptiness the drawing never uses, so [`fit`] fits this box instead — the
+/// picture then grows until its own outermost line is a margin away from the
+/// edge. `every_stroke_stays_inside_the_ink_box` keeps these four honest.
+pub const INK_LEFT: f32 = GROUND_X0 - FRAME_WIDTH / 2.0;
+/// The right edge of that rectangle: the far hand, tick included.
+pub const INK_RIGHT: f32 = HEAD_X + ARM_REACH + HAND_REACH + FIGURE_WIDTH / 2.0;
+/// Its top edge: the beam.
+pub const INK_TOP: f32 = BEAM_Y - FRAME_WIDTH / 2.0;
+/// Its bottom edge: the ground.
+pub const INK_BOTTOM: f32 = GROUND_Y + FRAME_WIDTH / 2.0;
+/// How wide the ink box is.
+pub const INK_WIDTH: f32 = INK_RIGHT - INK_LEFT;
+/// How tall it is.
+pub const INK_HEIGHT: f32 = INK_BOTTOM - INK_TOP;
+
+/// The ink box is a part of the design box, and a part with room in it. Both
+/// are constants, so this is checked when the crate is compiled rather than
+/// when it is tested.
+const _: () = assert!(INK_LEFT >= 0.0 && INK_TOP >= 0.0);
+const _: () = assert!(INK_RIGHT <= DESIGN_WIDTH && INK_BOTTOM <= DESIGN_HEIGHT);
+const _: () = assert!(INK_WIDTH > 0.0 && INK_HEIGHT > 0.0);
+
+/// How much of each side of the panel [`fit`] leaves empty, as a fraction of
+/// that side.
+///
+/// Enough that the gallows does not look wedged against the panel border,
+/// little enough that the drawing still reads as the thing the panel is for.
+const MARGIN: f32 = 0.04;
 
 /// A point in the design box. `y` grows downwards, as it does on screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -470,7 +510,11 @@ fn push_partial(strokes: &mut Vec<Stroke>, stroke: Stroke, progress: f32) {
 pub struct Fit {
     /// How many real pixels one design unit is worth.
     pub scale: f32,
-    /// Where the top-left of the scaled design box lands inside that rectangle.
+    /// Where the design box's own origin lands inside that rectangle.
+    ///
+    /// It is the *ink* box that is centred, not the design box, so this is
+    /// usually a little outside the rectangle — the design box's top-left
+    /// corner is a corner of nothing.
     pub offset: Point,
 }
 
@@ -485,20 +529,50 @@ impl Fit {
 
     /// A design-unit line width in real pixels, never thinner than a hairline —
     /// a stroke rounded down to nothing would simply disappear.
+    ///
+    /// Widths are scaled by the same factor as the coordinates, so a drawing
+    /// twice as big is drawn with lines twice as thick rather than turning
+    /// spindly as it grows.
     pub fn line_width(self, width: f32) -> f32 {
         (width * self.scale).max(1.0)
     }
+
+    /// How wide the finished drawing is, in real pixels.
+    pub fn drawn_width(self) -> f32 {
+        INK_WIDTH * self.scale
+    }
+
+    /// How tall it is.
+    pub fn drawn_height(self) -> f32 {
+        INK_HEIGHT * self.scale
+    }
 }
 
-/// Fit the design box into a `width` × `height` rectangle: as large as it goes
-/// without distorting it, and centred in whatever room is left over.
+/// Fit the drawing into a `width` × `height` rectangle: as large as it goes
+/// without distorting it or crossing the [`MARGIN`], and centred in whatever
+/// room is left over.
+///
+/// What is fitted is the [ink box](INK_LEFT), not the design box, so the
+/// picture is as big as the panel can hold rather than as big as the
+/// coordinate space it happens to be described in. The rectangle is usually
+/// far taller than the drawing's own proportions, in which case the width
+/// decides the scale and the spare height is split above and below; a
+/// rectangle that runs out of height first is handled the same way round.
+/// Taking the smaller of the two is also the only clamp this needs: however
+/// tall the window gets, the drawing stops growing when it has used up the
+/// width.
 pub fn fit(width: f32, height: f32) -> Fit {
-    let scale = (width / DESIGN_WIDTH).min(height / DESIGN_HEIGHT).max(0.0);
+    let usable = 1.0 - 2.0 * MARGIN;
+    let scale = (width * usable / INK_WIDTH)
+        .min(height * usable / INK_HEIGHT)
+        .max(0.0);
     Fit {
         scale,
+        // Centre the ink box, then step back from its top-left corner to the
+        // design box's origin, which is what `map` is given points in.
         offset: Point::new(
-            (width - DESIGN_WIDTH * scale) / 2.0,
-            (height - DESIGN_HEIGHT * scale) / 2.0,
+            (width - INK_WIDTH * scale) / 2.0 - INK_LEFT * scale,
+            (height - INK_HEIGHT * scale) / 2.0 - INK_TOP * scale,
         ),
     }
 }
@@ -787,40 +861,169 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_box_the_size_of_the_design_needs_no_scaling() {
-        let fit = fit(DESIGN_WIDTH, DESIGN_HEIGHT);
-        assert_eq!(fit.scale, 1.0);
-        assert_eq!(fit.offset, Point::new(0.0, 0.0));
-        assert_eq!(fit.map(Point::new(7.0, 9.0)), Point::new(7.0, 9.0));
+    /// The box the canvas is handed inside the stage panel from the review
+    /// screenshot: a 332-wide panel less its 16px padding either side, and a
+    /// 650-tall one less the title bar's row, the pips under the drawing and
+    /// the gaps around both.
+    const REVIEW_BOX: (f32, f32) = (300.0, 560.0);
+
+    /// The same, in the shortest window the app will open: [`MIN_WINDOW_SIZE`]
+    /// is 880 × 660, and the stage panel is a fixed width, so it is the height
+    /// that the minimum takes away.
+    ///
+    /// [`MIN_WINDOW_SIZE`]: crate::ui::MIN_WINDOW_SIZE
+    const MINIMUM_WINDOW_BOX: (f32, f32) = (300.0, 430.0);
+
+    /// How much of the box's own width and height the drawing covers. The
+    /// bigger of the two is the direction the fit was decided in, and it is
+    /// what "the drawing fills the panel" means as a number.
+    fn coverage(width: f32, height: f32) -> (f32, f32) {
+        let fit = fit(width, height);
+        (fit.drawn_width() / width, fit.drawn_height() / height)
     }
 
     #[test]
-    fn a_bigger_box_scales_the_drawing_up_whole() {
-        let fit = fit(DESIGN_WIDTH * 2.0, DESIGN_HEIGHT * 2.0);
-        assert_eq!(fit.scale, 2.0);
-        assert_eq!(fit.map(Point::new(10.0, 20.0)), Point::new(20.0, 40.0));
-        assert_eq!(fit.line_width(3.0), 6.0);
+    fn every_stroke_stays_inside_the_ink_box() {
+        for budget in 0..=PARTS.len() + 4 {
+            for wrong in 0..=budget + 1 {
+                let strokes = frame()
+                    .into_iter()
+                    .chain(figure(budget, wrong, 1.0))
+                    .chain(face());
+                for stroke in strokes {
+                    let edge = stroke.width / 2.0;
+                    for p in &stroke.points {
+                        assert!(
+                            p.x - edge >= INK_LEFT
+                                && p.x + edge <= INK_RIGHT
+                                && p.y - edge >= INK_TOP
+                                && p.y + edge <= INK_BOTTOM,
+                            "budget {budget}, wrong {wrong}: {p:?} escapes the ink box"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
-    fn spare_width_is_split_either_side_rather_than_stretched() {
-        let fit = fit(DESIGN_WIDTH + 100.0, DESIGN_HEIGHT);
-        assert_eq!(fit.scale, 1.0);
-        assert_eq!(fit.offset, Point::new(50.0, 0.0));
+    fn the_review_panel_gets_a_drawing_that_fills_it() {
+        let (width, height) = REVIEW_BOX;
+        let fit = fit(width, height);
+
+        // 240.5 design units of ink across a 300px panel, less a 4% margin
+        // either side.
+        assert!(
+            (fit.scale - 1.1476).abs() < 0.001,
+            "scale was {}",
+            fit.scale
+        );
+        assert!(
+            (fit.drawn_width() - 276.0).abs() < 0.01,
+            "drawn {} wide",
+            fit.drawn_width()
+        );
+        assert!(
+            (fit.drawn_height() - 338.5).abs() < 0.1,
+            "drawn {} tall",
+            fit.drawn_height()
+        );
+
+        // The width is what decides it, and the drawing uses 92% of it: the
+        // shipped review build managed 84px of 300, or 28%.
+        let (across, down) = coverage(width, height);
+        assert!(across > 0.9, "only {across} of the width");
+        assert!(down < across, "the height should not be the constraint");
     }
 
     #[test]
-    fn spare_height_is_split_above_and_below() {
-        let fit = fit(DESIGN_WIDTH, DESIGN_HEIGHT + 60.0);
-        assert_eq!(fit.scale, 1.0);
-        assert_eq!(fit.offset, Point::new(0.0, 30.0));
+    fn the_drawing_lands_a_margin_in_from_each_edge() {
+        let (width, height) = REVIEW_BOX;
+        let fit = fit(width, height);
+        let left = fit.map(Point::new(INK_LEFT, INK_TOP));
+        let right = fit.map(Point::new(INK_RIGHT, INK_BOTTOM));
+
+        assert!((left.x - width * MARGIN).abs() < 0.01, "left edge {left:?}");
+        assert!(
+            (right.x - width * (1.0 - MARGIN)).abs() < 0.01,
+            "right edge {right:?}"
+        );
+        // Centred vertically, with the same slack above as below.
+        assert!(
+            ((height - right.y) - left.y).abs() < 0.01,
+            "{left:?} to {right:?} in {height}"
+        );
+    }
+
+    #[test]
+    fn the_shortest_window_still_fills_its_panel() {
+        let (width, height) = MINIMUM_WINDOW_BOX;
+        let (across, down) = coverage(width, height);
+        assert!(
+            across.max(down) > 0.9,
+            "{across} across and {down} down is not filling anything"
+        );
+        assert!(
+            across <= 1.0 && down <= 1.0,
+            "the drawing overflows its box"
+        );
+        assert!(fit(width, height).scale > 0.9, "the drawing shrank away");
+    }
+
+    #[test]
+    fn a_very_tall_panel_stops_growing_the_drawing_at_the_width() {
+        let (width, _) = REVIEW_BOX;
+        let settled = fit(width, 560.0).scale;
+        for height in [1_000.0, 4_000.0, 20_000.0] {
+            assert_eq!(fit(width, height).scale, settled, "at {height} tall");
+        }
+    }
+
+    #[test]
+    fn the_drawing_keeps_its_shape_whatever_the_box() {
+        let shape = INK_WIDTH / INK_HEIGHT;
+        for (width, height) in [
+            (300.0, 560.0),
+            (300.0, 120.0),
+            (900.0, 300.0),
+            (80.0, 900.0),
+        ] {
+            let fit = fit(width, height);
+            let drawn = fit.drawn_width() / fit.drawn_height();
+            assert!((drawn - shape).abs() < 0.001, "{width}x{height}: {drawn}");
+            assert!(
+                fit.drawn_width() <= width + 0.01,
+                "{width}x{height} too wide"
+            );
+            assert!(
+                fit.drawn_height() <= height + 0.01,
+                "{width}x{height} too tall"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lines_get_thicker_as_the_drawing_gets_bigger() {
+        let (width, height) = REVIEW_BOX;
+        let big = fit(width, height);
+        let small = fit(width / 4.0, height / 4.0);
+
+        // The panel from the screenshot drew its frame at a hair under 2px.
+        assert!(
+            big.line_width(FRAME_WIDTH) > 7.0,
+            "frame is {}px",
+            big.line_width(FRAME_WIDTH)
+        );
+        assert!(
+            (big.line_width(FRAME_WIDTH) / small.line_width(FRAME_WIDTH) - 4.0).abs() < 0.001,
+            "widths do not track the scale"
+        );
     }
 
     #[test]
     fn a_shrunken_drawing_keeps_hairline_strokes_visible() {
-        let fit = fit(DESIGN_WIDTH / 10.0, DESIGN_HEIGHT / 10.0);
-        assert!((fit.scale - 0.1).abs() < 0.001);
+        let fit = fit(INK_WIDTH / 10.0, INK_HEIGHT / 10.0);
+        assert!(fit.scale < 0.1);
         assert_eq!(fit.line_width(FACE_WIDTH), 1.0);
     }
 
@@ -828,6 +1031,7 @@ mod tests {
     fn an_empty_box_asks_for_nothing_impossible() {
         let fit = fit(0.0, 0.0);
         assert_eq!(fit.scale, 0.0);
+        assert_eq!(fit.drawn_width(), 0.0);
         assert_eq!(fit.line_width(FRAME_WIDTH), 1.0);
     }
 }
