@@ -210,3 +210,29 @@ Two smaller ones from the same file:
   derive resolve. Same reason `gpui_kit` re-exports its own `actions!`.
 - `Pixels`' tuple field is private outside gpui. Use `Pixels::as_f32()`; the
   `.0` you will see in gpui-kit's own source only compiles inside gpui-kit.
+
+### 9. A cross-axis-centred flex column with no width of its own shrink-wraps
+
+`render_stage` in `src/ui/mod.rs` puts the gallows drawing and the stage pips in
+one `v_flex()` inside a `panel(cx)` that sets `.items_center()`. The `.w_full()`
+on that column is load-bearing.
+
+**Mechanism.** `items_center` does not stretch a child across the cross axis, so
+the column is sized to its content, and taffy 0.13 measures that content
+*intrinsically* — with no container width to resolve percentages against. The
+drawing's own `w_full` (`src/ui/gallows.rs`) therefore contributes nothing to
+the measurement, and the only child left with a width was the pip row:
+`MAX_WRONG_GUESSES` (6) pips of `PIP_SIZE` (`px(9.)`) with five `gap_1p5` gaps
+between them, exactly 84px. The column shrink-wrapped to 84px inside a 300px
+panel (`STAGE_WIDTH` 332, less `p_4` on both sides), and the canvas dutifully
+fitted its 300×350 design box into that: the gallows drew at 28% scale, its
+7-unit frame lines under 2px.
+
+**Symptom signature.** A `w_full` child renders far too small, and the width it
+renders at turns out to be the width of one of its *siblings*. That reads as a
+scaling bug in the drawing code, and it isn't — the drawing filled the box it
+was handed; the box was wrong one level up.
+
+The fix is `.w_full()` on the column, `flex_1` instead of a fixed height on the
+drawing so it takes the column's slack, and `flex_none` on the pip row so it
+keeps its own. Real bug in this repo, fixed in commit `315e8ef`.
