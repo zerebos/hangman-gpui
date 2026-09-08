@@ -20,9 +20,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::audio::Audio;
-use crate::game::{
-    Cell, Difficulty, Game, GameResult, GuessResult, MAX_WRONG_GUESSES, MatchOutcome,
-};
+use crate::game::{Cell, Difficulty, Game, GameResult, GuessResult, MatchOutcome};
 use crate::settings::{Rect, Settings, ThemeChoice, WindowFrame};
 use crate::stats::{DifficultyStats, Session};
 use gallows::gallows;
@@ -1449,6 +1447,9 @@ impl HangmanView {
     /// The gallows stage: the drawing, plus the wrong-guess meter under it.
     fn render_stage(&self, cx: &Context<Self>) -> impl IntoElement {
         let wrong = self.game.wrong_guesses();
+        // Six on Insane and on a word list of your own, up to ten on Easy —
+        // the drawing and the pips both follow whatever this game allows.
+        let budget = self.game.guess_budget();
 
         panel(cx)
             .w(STAGE_WIDTH)
@@ -1471,7 +1472,7 @@ impl HangmanView {
                             } else {
                                 cx.theme().red
                             })
-                            .child(format!("{wrong} / {MAX_WRONG_GUESSES}")),
+                            .child(format!("{wrong} / {budget}")),
                     ),
             )
             // The drawing sits on the panel itself: every line takes its
@@ -1481,24 +1482,31 @@ impl HangmanView {
             //
             // `w_full` is load-bearing. The panel centres its children, so
             // without a width of its own this column is sized to its content —
-            // and its only content with a width is the 84px pip row, because a
+            // and its only content with a width is the pip row, because a
             // percentage width (the drawing's `w_full`) measures as nothing
             // when the container's width is what is being measured. The
-            // drawing was handed an 84px-wide box for a 300px-wide panel and
-            // came out at 28% of the size it should have been.
+            // drawing was handed the 84px row's box for a 300px-wide panel and
+            // came out at 28% of the size it should have been. The row is
+            // wider now that the budget can reach ten (144px at most, still
+            // half the panel), which would have hidden the bug, not fixed it.
             .child(
                 v_flex()
                     .w_full()
                     .flex_1()
                     .items_center()
                     .gap_4()
-                    .child(gallows(wrong, MAX_WRONG_GUESSES))
+                    .child(gallows(wrong, budget))
                     .child(
-                        // Six pips, one per wrong guess: the score the drawing
-                        // is keeping, in a form you can count at a glance.
-                        h_flex().flex_none().gap_1p5().children(
-                            (0..MAX_WRONG_GUESSES).map(|step| Self::render_pip(step, wrong, cx)),
-                        ),
+                        // One pip per wrong guess the budget allows: the score
+                        // the drawing is keeping, in a form you can count at a
+                        // glance. Six of them at `PIP_SIZE` with five
+                        // `gap_1p5` gaps is 84px; ten with nine gaps is 144px,
+                        // inside the 300px the panel has between its padding
+                        // either way.
+                        h_flex()
+                            .flex_none()
+                            .gap_1p5()
+                            .children((0..budget).map(|step| Self::render_pip(step, wrong, cx))),
                     ),
             )
     }

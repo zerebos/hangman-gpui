@@ -387,8 +387,14 @@ mod stats_by_difficulty {
 mod tests {
     use super::*;
 
-    /// A clean win: the whole guess budget still unspent.
-    const CLEAN: usize = crate::game::MAX_WRONG_GUESSES;
+    /// A clean win on the classic budget: all six guesses still unspent.
+    ///
+    /// The budget varies by difficulty now, but nothing in this module reads
+    /// it — [`word_points`] is handed the guesses that were left — so one
+    /// fixed number keeps the tally tests comparable with each other.
+    /// `a_clean_win_pays_more_the_harder_the_list` is the test that uses the
+    /// real per-difficulty budgets.
+    const CLEAN: usize = crate::game::DEFAULT_GUESS_BUDGET;
 
     fn won(stats: &mut Stats, difficulty: Difficulty) -> u32 {
         stats.record_word(Some(difficulty), GameResult::Won, CLEAN)
@@ -404,6 +410,26 @@ mod tests {
     fn the_first_word_of_a_streak_earns_no_bonus() {
         // (50 + 10 * 6) * 1 + 0
         assert_eq!(word_points(Some(Difficulty::Easy), 6, 1), 110);
+    }
+
+    #[test]
+    fn a_clean_win_pays_more_the_harder_the_list() {
+        // The invariant behind the four budgets: they fall as the weights
+        // climb, and the weights win. If either table is ever retuned on its
+        // own, playing up could quietly stop paying — this is what catches it.
+        let clean: Vec<u32> = Difficulty::ALL
+            .iter()
+            .map(|&difficulty| word_points(Some(difficulty), difficulty.guess_budget(), 1))
+            .collect();
+        assert_eq!(
+            clean,
+            vec![150, 260, 360, 440],
+            "easy, medium, hard, insane"
+        );
+        assert!(
+            clean.windows(2).all(|pair| pair[0] < pair[1]),
+            "a clean win must be worth strictly more on every step up: {clean:?}"
+        );
     }
 
     #[test]
