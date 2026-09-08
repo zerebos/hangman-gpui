@@ -41,25 +41,37 @@ cargo check --all-targets
 cargo test
 ```
 
+`cargo test` is 121 tests and finishes in under a second — every one of them is
+in-file in a module with no GPUI types in it, so nothing there opens a window.
+
 ## Layout
 
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 28 unit
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 35 unit
   tests in-file. Keep it that way; UI work should not need to touch it. Its
   `words_won`/`words_lost` are *per-match* counters that exist only so
   `finish_match` can derive a `MatchOutcome`; they reset with the match, and
-  they are not a score.
+  they are not a score. The guess budget lives here too and is per-difficulty
+  (`Difficulty::guess_budget`: 10/8/7/6, and `DEFAULT_GUESS_BUDGET` = 6 for a
+  word list with no difficulty behind it). The four numbers are not free: they
+  have to stay inside `gallows::CORE_PARTS..=gallows::PARTS.len()`, i.e. 6..=10,
+  or a wrong guess stops being exactly one new body part, and they have to keep
+  falling as `Difficulty::weight` climbs or playing up stops paying. Both are
+  guarded by tests (`every_budget_buys_exactly_one_body_part_per_wrong_guess`
+  here, `a_clean_win_pays_more_the_harder_the_list` in `stats.rs`) — read those
+  before retuning either table.
 - `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the element that
   paints the gallows.
 - `src/gallows.rs` — the gallows *drawing*, as plain coordinates: polylines in
   a fixed 300×350 design box, which body part belongs to which stage, and the
   transform that fits the box into the rectangle the window gives it. **No GPUI
-  types**, like `game.rs`, with 32 in-file tests. Its partner `src/ui/gallows.rs`
+  types**, like `game.rs`, with 35 in-file tests. Its partner `src/ui/gallows.rs`
   is the only thing that turns any of it into `PathBuilder` paths, and it holds
   the colours (from `cx.theme()`) and the draw-on animation. Keep the split:
   geometry that a test can check belongs here, not in the 1,600-line view.
   Nothing in either file assumes a budget of six wrong guesses — `parts_drawn`
-  takes the budget as an argument, which is what roadmap item 4 needs.
-- `src/stats.rs` — points, streaks and the lifetime tally, with 25 in-file
+  takes the budget as an argument, which is what let roadmap item 4 make the
+  budget per-difficulty without touching either of them.
+- `src/stats.rs` — points, streaks and the lifetime tally, with 26 in-file
   tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
   for the score live so that `game.rs` needs none: `Difficulty` is mapped by
   hand there, exactly as `settings.rs` does it. `Stats` is the persisted value,
@@ -221,12 +233,19 @@ on that column is load-bearing.
 the column is sized to its content, and taffy 0.13 measures that content
 *intrinsically* — with no container width to resolve percentages against. The
 drawing's own `w_full` (`src/ui/gallows.rs`) therefore contributes nothing to
-the measurement, and the only child left with a width was the pip row:
-`MAX_WRONG_GUESSES` (6) pips of `PIP_SIZE` (`px(9.)`) with five `gap_1p5` gaps
-between them, exactly 84px. The column shrink-wrapped to 84px inside a 300px
-panel (`STAGE_WIDTH` 332, less `p_4` on both sides), and the canvas dutifully
-fitted its 300×350 design box into that: the gallows drew at 28% scale, its
-7-unit frame lines under 2px.
+the measurement, and the only child left with a width was the pip row: one pip
+of `PIP_SIZE` (`px(9.)`) per wrong guess in the budget, with a `gap_1p5`
+(`rems(0.375)`, 6px) between each pair. At the time the budget was a hard 6, so
+that row was 6×9 + 5×6 = exactly 84px. The column shrink-wrapped to 84px inside
+a 300px panel (`STAGE_WIDTH` 332, less `p_4` on both sides), and the canvas
+dutifully fitted its 300×350 design box into that: the gallows drew at 28%
+scale, its 7-unit frame lines under 2px.
+
+The budget is per-difficulty since roadmap item 4, so the row is now 84px on
+Insane and 10×9 + 9×6 = 144px on Easy — still under half of the 300px, so the
+column would still have shrink-wrapped, just less obviously. Note what that
+means for the next person: a wider sibling would have *hidden* this bug rather
+than fixed it. The `w_full` is what fixes it, at any budget.
 
 **Symptom signature.** A `w_full` child renders far too small, and the width it
 renders at turns out to be the width of one of its *siblings*. That reads as a
