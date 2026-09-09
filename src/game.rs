@@ -179,6 +179,45 @@ pub struct GuessOutcome {
     pub match_: Option<MatchOutcome>,
 }
 
+/// What happened when a hint was asked for.
+///
+/// The mirror of [`GuessResult`]: one variant per way the call can land, with
+/// the two refusals spelled out separately so a UI can say *why* it will not
+/// give you one rather than just going quiet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HintResult {
+    /// This letter was revealed, and it cost one wrong guess.
+    Revealed(char),
+    /// Refused: one guess is left, and a hint costs one.
+    ///
+    /// A hint priced in guesses must not be allowed to spend the last one. It
+    /// would reveal a letter and lose the word in the same breath — a trap
+    /// rather than a choice — and it would force an answer to "is a word
+    /// completed by the hint that killed you a win or a loss?". Stopping one
+    /// guess short makes the question moot.
+    NoGuessToSpare,
+    /// Refused: the game (or the whole match) was already over, or the word
+    /// holds nothing that is still hidden. Nothing happened, exactly as
+    /// [`GuessResult::Ignored`] means for a guess.
+    Ignored,
+}
+
+/// Everything one call to [`Game::hint`] changed.
+///
+/// Shaped like [`GuessOutcome`], and for the same reason: `game` and `match_`
+/// are `Some` only when the hint ended the game (or the match), so a UI can
+/// use them directly as "announce this now" signals. A hint can only ever end
+/// a game by *winning* it — see [`HintResult::NoGuessToSpare`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HintOutcome {
+    /// How the hint itself resolved.
+    pub result: HintResult,
+    /// Set when the revealed letter completed the word.
+    pub game: Option<GameResult>,
+    /// Set when that win also ended the match.
+    pub match_: Option<MatchOutcome>,
+}
+
 /// One character of the current word, ready to be laid out by a UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
@@ -418,6 +457,71 @@ impl Game {
         }
     }
 
+    /// Reveal one letter of the word, at the price of one wrong guess.
+    ///
+    /// The letter goes into the guessed set exactly as a correct guess would —
+    /// so the word row, the keyboard and the win check all see it as one — and
+    /// `wrong_guesses` goes up by one, so the wrong-guess counter, the pips
+    /// and the gallows all charge for it without any of them knowing that
+    /// hints exist. Pricing a hint in guesses is what keeps it that cheap:
+    /// [`crate::stats`] already pays a solved word by the budget it left
+    /// unspent, so a hint needs no penalty of its own, and
+    /// [`Difficulty::guess_budget`] already sizes the price per difficulty —
+    /// a tenth of Easy, a sixth of Insane.
+    ///
+    /// *Which* letter is drawn from the game's own RNG, so a seeded game
+    /// ([`Game::with_seed`], [`Game::from_words_with_seed`]) hints
+    /// reproducibly.
+    ///
+    /// Changes nothing and reveals nothing whenever [`Game::can_hint`] is
+    /// false; the [`HintResult`] says which of the reasons it was.
+    pub fn hint(&mut self) -> HintOutcome {
+        let refused = |result| HintOutcome {
+            result,
+            game: None,
+            match_: None,
+        };
+
+        if self.is_game_over() {
+            return refused(HintResult::Ignored);
+        }
+        // Deliberately `<= 1` rather than `== 0`: see `HintResult::NoGuessToSpare`.
+        if self.remaining_guesses() <= 1 {
+            return refused(HintResult::NoGuessToSpare);
+        }
+        let hidden = self.hidden_letters();
+        if hidden.is_empty() {
+            // Unreachable while a game is live — revealing the last hidden
+            // letter wins the word, so a game still in progress always has one
+            // — but the draw below needs a non-empty pool, and a guard says
+            // that out loud instead of leaving an index to panic on.
+            return refused(HintResult::Ignored);
+        }
+
+        let letter = hidden[self.rng.random_range(0..hidden.len())];
+        self.guessed.insert(letter);
+        self.wrong_guesses += 1;
+
+        // The win is checked first, and the loss is not checked at all: the
+        // budget cannot run out here, because `remaining_guesses` was at least
+        // two before the increment above. That is the whole point of refusing
+        // at one guess left.
+        if self.is_word_complete() {
+            let ended = self.end_game(GameResult::Won, GuessResult::Correct);
+            HintOutcome {
+                result: HintResult::Revealed(letter),
+                game: ended.game,
+                match_: ended.match_,
+            }
+        } else {
+            HintOutcome {
+                result: HintResult::Revealed(letter),
+                game: None,
+                match_: None,
+            }
+        }
+    }
+
     /// Give up on the current word: an instant loss that counts in the tally.
     ///
     /// Returns the match outcome if this was the last word of the match. Does
@@ -574,6 +678,16 @@ impl Game {
         self.guess_budget.saturating_sub(self.wrong_guesses)
     }
 
+    /// Whether [`Game::hint`] would actually reveal something.
+    ///
+    /// The UI disables its Hint button on this, so the refusals inside
+    /// [`Game::hint`] are a backstop rather than the usual path. Note the
+    /// middle term: a hint is unavailable one guess *before* the last, not on
+    /// it.
+    pub fn can_hint(&self) -> bool {
+        !self.is_game_over() && self.remaining_guesses() > 1 && !self.hidden_letters().is_empty()
+    }
+
     /// Whether the current game has been resolved, one way or another.
     pub fn is_game_over(&self) -> bool {
         self.result.is_some()
@@ -622,6 +736,24 @@ impl Game {
     /// Which word of the match is on screen, 1-based — the "3" in "word 3 of 10".
     pub fn word_number(&self) -> usize {
         self.total_words - self.remaining_words.len()
+    }
+
+    /// The distinct guessable letters of the word that are still hidden — the
+    /// pool a hint is drawn from.
+    ///
+    /// Sorted and de-duplicated, so which letter a seeded game hints depends
+    /// on the seed alone and not on where the letters happen to sit in the
+    /// word, and so a letter that appears three times is no likelier to come
+    /// up than one that appears once.
+    fn hidden_letters(&self) -> Vec<char> {
+        let mut letters: Vec<char> = self
+            .word
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic() && !self.guessed.contains(c))
+            .collect();
+        letters.sort_unstable();
+        letters.dedup();
+        letters
     }
 
     /// Whether every guessable character of the current word has been guessed.
@@ -1115,5 +1247,163 @@ mod tests {
         let a = Game::with_seed(Difficulty::Medium, 2024);
         let b = Game::with_seed(Difficulty::Medium, 2024);
         assert_eq!(a.word(), b.word());
+    }
+
+    // --------------------------------------------------------------- hints
+
+    #[test]
+    fn a_hint_reveals_exactly_one_new_letter() {
+        let mut game = game_with_word("ALPHABET");
+        game.guess('A');
+        assert_eq!(game.display(), "A___A___");
+
+        let HintResult::Revealed(letter) = game.hint().result else {
+            panic!("a fresh game should have a hint to give");
+        };
+        assert!(game.word().contains(letter), "{letter} is not in the word");
+        assert_ne!(letter, 'A', "a hint may not re-reveal a guessed letter");
+        assert_eq!(
+            game.guessed_letters().len(),
+            2,
+            "a hint adds one letter and no more"
+        );
+        assert!(game.guessed_letters().contains(&letter));
+        assert!(game.display().contains(letter));
+    }
+
+    #[test]
+    fn a_hint_costs_exactly_one_wrong_guess() {
+        let mut game = game_with_word("ALPHABET");
+        let budget = game.guess_budget();
+        assert_eq!(game.wrong_guesses(), 0);
+
+        assert!(matches!(game.hint().result, HintResult::Revealed(_)));
+        assert_eq!(game.wrong_guesses(), 1);
+        assert_eq!(game.remaining_guesses(), budget - 1);
+        assert!(!game.is_game_over(), "one hint cannot end a fresh game");
+    }
+
+    #[test]
+    fn a_hint_ends_neither_the_game_nor_the_match() {
+        let mut game = game_with_word("ALPHABET");
+        assert!(matches!(game.hint().result, HintResult::Revealed(_)));
+        assert_eq!(game.words_won(), 0);
+        assert_eq!(game.words_lost(), 0);
+        assert_eq!(game.match_outcome(), None);
+        assert_eq!(game.game_result(), None);
+    }
+
+    #[test]
+    fn a_seeded_game_hints_the_same_letter_twice() {
+        let hint_of = |seed| {
+            let mut game = Game::from_words_with_seed(vec!["ALPHABET".into()], seed)
+                .expect("word list is not empty");
+            game.hint().result
+        };
+        assert_eq!(hint_of(7), hint_of(7));
+    }
+
+    #[test]
+    fn a_hint_is_refused_with_one_guess_left() {
+        let mut game = game_with_word("ALPHABET");
+        // Everything but the last guess, so `remaining_guesses` is exactly 1.
+        for letter in wrong_letters(&game)
+            .into_iter()
+            .take(game.guess_budget() - 1)
+        {
+            game.guess(letter);
+        }
+        assert_eq!(game.remaining_guesses(), 1);
+        assert!(!game.is_game_over());
+
+        let guessed = game.guessed_letters().len();
+        let wrong = game.wrong_guesses();
+        assert!(!game.can_hint(), "the last guess is not a hint to spend");
+        assert_eq!(game.hint().result, HintResult::NoGuessToSpare);
+        assert_eq!(game.guessed_letters().len(), guessed, "nothing revealed");
+        assert_eq!(game.wrong_guesses(), wrong, "and nothing charged");
+        assert!(!game.is_game_over(), "a refused hint cannot lose the word");
+    }
+
+    #[test]
+    fn a_hint_is_available_right_up_to_that_point() {
+        let mut game = game_with_word("ALPHABET");
+        for letter in wrong_letters(&game)
+            .into_iter()
+            .take(game.guess_budget() - 2)
+        {
+            game.guess(letter);
+        }
+        assert_eq!(game.remaining_guesses(), 2);
+        assert!(game.can_hint());
+        assert!(matches!(game.hint().result, HintResult::Revealed(_)));
+        assert_eq!(game.remaining_guesses(), 1);
+    }
+
+    #[test]
+    fn a_hint_is_refused_once_the_game_is_over() {
+        let mut lost = game_with_word("ALPHABET");
+        lose_current_game(&mut lost);
+        assert!(!lost.can_hint());
+        assert_eq!(lost.hint().result, HintResult::Ignored);
+
+        let mut won = game_with_word("ALPHABET");
+        win_current_game(&mut won);
+        assert!(!won.can_hint());
+        assert_eq!(won.hint().result, HintResult::Ignored);
+    }
+
+    #[test]
+    fn a_hint_is_refused_when_the_word_is_fully_revealed() {
+        let mut game = game_with_word("ALPHABET");
+        win_current_game(&mut game);
+        // Every guessable letter is showing, so there is nothing left to give.
+        assert!(game.cells().iter().all(|cell| cell.revealed));
+        assert!(!game.can_hint());
+        assert_eq!(game.hint().result, HintResult::Ignored);
+        assert_eq!(game.wrong_guesses(), 0, "a refused hint charges nothing");
+    }
+
+    #[test]
+    fn a_hint_that_completes_the_word_wins_it() {
+        let mut game = game_with_word("CAT");
+        game.guess('C');
+        game.guess('A');
+        assert_eq!(game.display(), "CA_");
+
+        let outcome = game.hint();
+        assert_eq!(outcome.result, HintResult::Revealed('T'));
+        assert_eq!(outcome.game, Some(GameResult::Won));
+        // The single-word list is exhausted, so the match ends with it.
+        assert_eq!(outcome.match_, Some(MatchOutcome::Win));
+        assert!(game.is_won());
+        assert_eq!(game.words_won(), 1);
+        assert_eq!(game.words_lost(), 0);
+        // It still cost a guess: the win is scored on what is left of the
+        // budget, which is one less than it would have been.
+        assert_eq!(game.wrong_guesses(), 1);
+        assert_eq!(game.remaining_guesses(), game.guess_budget() - 1);
+    }
+
+    #[test]
+    fn a_winning_hint_wins_even_with_the_budget_nearly_gone() {
+        let mut game = game_with_word("CAT");
+        game.guess('C');
+        game.guess('A');
+        // Down to two guesses: the hint spends one and must still win rather
+        // than lose, whichever check runs first.
+        for letter in wrong_letters(&game)
+            .into_iter()
+            .take(game.guess_budget() - 2)
+        {
+            game.guess(letter);
+        }
+        assert_eq!(game.remaining_guesses(), 2);
+
+        let outcome = game.hint();
+        assert_eq!(outcome.result, HintResult::Revealed('T'));
+        assert_eq!(outcome.game, Some(GameResult::Won));
+        assert!(game.is_won());
+        assert_eq!(game.remaining_guesses(), 1);
     }
 }

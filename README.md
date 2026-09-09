@@ -6,7 +6,8 @@ same two sound cues and the same (slightly unhinged) alert messages — rebuilt
 with [gpui-kit](https://gpui-kit.com) instead of Swing. Two things are not the
 original's: the gallows is drawn line by line at run time rather than shipped as
 pictures, and difficulty now sets [the guess budget](#the-guess-budget) as well
-as the word list. See
+as the word list — a budget you can trade a guess out of for
+[a hint](#hints). See
 [Differences from the original](#differences-from-the-original).
 
 ```
@@ -26,11 +27,11 @@ as the word list. See
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 35 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
-keeps the streak (26 more), [`src/settings.rs`](src/settings.rs) is the equally
+engine (with 45 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
+keeps the streak (28 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 121 tests, and
+(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 133 tests, and
 `cargo test` runs the lot in well under a second. The word lists and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -181,6 +182,7 @@ word list. The streak deliberately does neither, which is the point of it.
 | Action | How |
 | --- | --- |
 | Guess a letter | Type it, or click its button |
+| Reveal a letter (costs one wrong guess) | `Hint` button, or `Ctrl+H` |
 | Next word after a game ends | `New Game?` button, or Enter / Space |
 | Give up on the current word (counts as a loss) | `Change Word` button, or `Ctrl+N` |
 | Load your own word list | `Open word list…` button, or `Ctrl+O` |
@@ -217,6 +219,26 @@ Ten is the ceiling for that reason and not an arbitrary one.
 A word list you load from a file gets six, because nothing in a `.txt` file
 says how hard it is meant to be.
 
+## Hints
+
+`Hint` — the toolbar button, or `Ctrl+H` — reveals one letter of the word you
+have not guessed yet, and charges you **one wrong guess** for it. The letter
+lights up its cells and its key exactly as if you had guessed it, and the
+gallows gains a body part exactly as if you had guessed wrong.
+
+That price is deliberately the only one. A hint costs a tenth of Easy's budget
+and a sixth of Insane's, so it is worth what the difficulty says it is worth
+with no second number to tune, and the ten points an unspent guess is worth
+under [Scoring](#scoring) is the whole penalty — there is no hint fee on top of
+it.
+
+**A hint is refused when you have one guess left**, and the button greys out
+and says so. A hint that spent your last guess would reveal a letter and lose
+you the word in the same breath, which is a trap rather than a choice — and it
+would raise the question of whether a word completed by the hint that killed
+you counts as a win. Stopping one guess short means the question never comes
+up. A hint *can* finish a word, and when it does you win.
+
 ## Scoring
 
 Solving a word is worth points, and the number is small enough to work out in
@@ -240,6 +262,12 @@ streak. The best a single word can do is a clean Insane win on a streak:
 `(50 + 60) × 4 + 100` = **540**. The worst is **60**: an Easy word solved on the
 very last guess you had, with no streak behind it. A word you lose, or give up
 on, is worth nothing.
+
+A [hint](#hints) is charged through the guess budget rather than by a penalty
+of its own: it spends a wrong guess, so the `10 × guesses left` term takes ten
+points per difficulty weight off the word and nothing else changes. A word
+solved with a hint scores exactly what the same word solved with one guess
+fewer in hand would, and it extends the streak like any other win.
 
 The **streak** is how many words you have solved in a row. It is the one number
 here that survives everything: it carries across the end of a match, across a
@@ -292,6 +320,9 @@ per difficulty — is behind the `Stats` button in the toolbar and is
   `Wins` and `Losses` for the match in hand. Here it is the match's points, the
   current streak, the best streak ever, and a muted `Word n of 10` counter so you
   can tell how much of a match is left. See [Scoring](#scoring).
+- **Small addition:** hints. The original had none. `Hint` reveals a letter for
+  the price of a wrong guess, and refuses when that would be the last guess you
+  have — see [Hints](#hints).
 - **Small addition:** lifetime stats. The original remembered nothing between
   launches; this one keeps every point, both streaks and the win/loss tally,
   broken down by difficulty, behind the toolbar's `Stats` button.
@@ -304,8 +335,19 @@ the order they were argued about rather than in any committed order.
 
 ### Game and rules
 
-1. **Hints, at a cost.** Reveal an unguessed letter in exchange for a wrong
-   guess, or out of a small per-match budget.
+1. **Hints, at a cost** *(done).* `Hint` in the toolbar, or `Ctrl+H`, reveals a
+   letter you have not guessed and charges a wrong guess for it — the first of
+   the two variants that were on the table. The second, a small per-match
+   allowance, was not built: it needs a counter in [`Game`](src/game.rs), a
+   ruling on whether it refills between words, and a field in the settings file
+   to survive a launch, and it would still need a price for the hint after the
+   allowance ran out. Charging a guess needs none of that. It reuses the loss
+   path `guess` already runs, item 4 sizes it per difficulty for free — a tenth
+   of Easy, a sixth of Insane — and it needs no scoring change at all, because
+   a spent guess already costs the word ten points through `remaining_guesses`.
+   A hint is refused with one guess left, so it can never be the thing that
+   loses you the word; a hint that completes the word wins it. See
+   [Hints](#hints).
 2. **Scoring and streaks** *(done).* The bare `wins` / `losses` counters are
    gone. A solved word now scores on the guesses you had left and the difficulty
    you were playing, a run of solved words builds a bonus on top, and the

@@ -5,7 +5,7 @@ use gpui_kit::*;
 
 use hangman_gpui::settings::Settings;
 use hangman_gpui::ui::{
-    ChangeWord, HangmanView, KEY_CONTEXT, MIN_WINDOW_SIZE, OpenWordList, window_bounds,
+    ChangeWord, HangmanView, Hint, KEY_CONTEXT, MIN_WINDOW_SIZE, OpenWordList, window_bounds,
 };
 
 fn main() {
@@ -32,6 +32,10 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("ctrl-o", OpenWordList, Some(KEY_CONTEXT)),
             KeyBinding::new("ctrl-n", ChangeWord, Some(KEY_CONTEXT)),
+            // Not one of the original's — it had no hints — but it sits with
+            // them: `on_key_down` lets any chord through rather than guessing
+            // its letter, so Ctrl+H costs a guess and a bare H does not.
+            KeyBinding::new("ctrl-h", Hint, Some(KEY_CONTEXT)),
         ]);
 
         // Restoring the saved bounds needs an `&App` — for the displays that
