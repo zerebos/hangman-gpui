@@ -41,12 +41,12 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 121 tests and finishes in under a second — every one of them is
+`cargo test` is 133 tests and finishes in under a second — every one of them is
 in-file in a module with no GPUI types in it, so nothing there opens a window.
 
 ## Layout
 
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 35 unit
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 45 unit
   tests in-file. Keep it that way; UI work should not need to touch it. Its
   `words_won`/`words_lost` are *per-match* counters that exist only so
   `finish_match` can derive a `MatchOutcome`; they reset with the match, and
@@ -58,7 +58,14 @@ in-file in a module with no GPUI types in it, so nothing there opens a window.
   falling as `Difficulty::weight` climbs or playing up stops paying. Both are
   guarded by tests (`every_budget_buys_exactly_one_body_part_per_wrong_guess`
   here, `a_clean_win_pays_more_the_harder_the_list` in `stats.rs`) — read those
-  before retuning either table.
+  before retuning either table. `hint` spends that budget: it reveals a letter
+  drawn from the game's own `rng` (so a seeded game hints reproducibly) and
+  charges one wrong guess, which is why hints needed no scoring change — a
+  spent guess is already worth ten points through `remaining_guesses`. It
+  refuses at `remaining_guesses() <= 1` on purpose, and `can_hint` is the
+  predicate the UI greys its button out on: with two guesses in hand before the
+  charge, a hint can never be the guess that *loses* a word, so `hint` checks
+  the win and never the loss.
 - `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the element that
   paints the gallows.
 - `src/gallows.rs` — the gallows *drawing*, as plain coordinates: polylines in
@@ -71,7 +78,7 @@ in-file in a module with no GPUI types in it, so nothing there opens a window.
   Nothing in either file assumes a budget of six wrong guesses — `parts_drawn`
   takes the budget as an argument, which is what let roadmap item 4 make the
   budget per-difficulty without touching either of them.
-- `src/stats.rs` — points, streaks and the lifetime tally, with 26 in-file
+- `src/stats.rs` — points, streaks and the lifetime tally, with 28 in-file
   tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
   for the score live so that `game.rs` needs none: `Difficulty` is mapped by
   hand there, exactly as `settings.rs` does it. `Stats` is the persisted value,
