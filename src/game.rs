@@ -579,8 +579,21 @@ impl Game {
     /// The per-match word tally and the word pool both reset, and the first
     /// word is dealt. The lifetime score and the streak in [`crate::stats`] are
     /// untouched — a streak spans matches on purpose.
-    pub fn set_difficulty(&mut self, difficulty: Difficulty) {
+    ///
+    /// Returns `false` (and changes nothing) when `difficulty` is the one
+    /// already being played and the match is still running: the UI's pills
+    /// are always clickable, including the selected one, and throwing away
+    /// the word in hand for a click that picked no new difficulty is not what
+    /// anyone means by it. Once the match *is* over that same click is the
+    /// only way to play the list again — the footer says so in as many words
+    /// — so it restarts as usual and returns `true`. A custom word list has
+    /// no difficulty at all, so every pill restarts out of one.
+    pub fn set_difficulty(&mut self, difficulty: Difficulty) -> bool {
+        if self.difficulty == Some(difficulty) && !self.is_match_over() {
+            return false;
+        }
         self.reset(Some(difficulty), difficulty.words());
+        true
     }
 
     /// Abandon the current match and start a fresh one on a custom word list.
@@ -1189,6 +1202,80 @@ mod tests {
             Game::from_words_with_seed(vec!["CAT".into()], 5).expect("word list is not empty");
         assert_eq!(game.give_up(), Some(MatchOutcome::Loss));
         assert!(game.is_match_over());
+    }
+
+    #[test]
+    fn reselecting_the_current_difficulty_leaves_the_game_alone() {
+        // The pills fire even when they are already selected, so the one in
+        // play has to be a no-op — otherwise a stray click on the difficulty
+        // you are already playing costs you the word in hand.
+        let mut game = Game::with_seed(Difficulty::Insane, 3);
+        let word = game.word().to_string();
+        let spend = wrong_letters(&game)[0];
+        game.guess(spend);
+        assert_eq!(game.wrong_guesses(), 1);
+
+        assert!(
+            !game.set_difficulty(Difficulty::Insane),
+            "re-selecting the difficulty in play should refuse"
+        );
+        assert_eq!(game.word(), word, "the word in hand survived");
+        assert_eq!(game.wrong_guesses(), 1, "the wrong guess survived");
+        assert!(game.guessed_letters().contains(&spend));
+        assert_eq!(game.word_number(), 1);
+    }
+
+    #[test]
+    fn picking_a_different_difficulty_still_starts_a_new_game() {
+        let mut game = Game::with_seed(Difficulty::Insane, 3);
+        let spend = wrong_letters(&game)[0];
+        game.guess(spend);
+
+        assert!(
+            game.set_difficulty(Difficulty::Easy),
+            "a different difficulty should restart"
+        );
+        assert_eq!(game.difficulty(), Some(Difficulty::Easy));
+        assert_eq!(game.wrong_guesses(), 0);
+        assert!(game.guessed_letters().is_empty());
+        assert_eq!(game.guess_budget(), Difficulty::Easy.guess_budget());
+        assert!(Difficulty::Easy.words().contains(&game.word().to_string()));
+    }
+
+    #[test]
+    fn reselecting_the_current_difficulty_restarts_once_the_match_is_over() {
+        // The footer at the end of a match reads "Pick a difficulty to start a
+        // new match", and the difficulty just played is one of the four on
+        // offer. The no-op above must not eat that click.
+        let mut game = Game::with_seed(Difficulty::Insane, 3);
+        while game.give_up().is_none() {
+            assert!(game.new_game(), "the match still had words left");
+        }
+        assert!(game.is_match_over());
+
+        assert!(
+            game.set_difficulty(Difficulty::Insane),
+            "the same difficulty should replay a finished match"
+        );
+        assert!(!game.is_match_over());
+        assert_eq!((game.words_won(), game.words_lost()), (0, 0));
+        assert_eq!(game.word_number(), 1);
+    }
+
+    #[test]
+    fn every_pill_restarts_out_of_a_custom_word_list() {
+        // A loaded list has no difficulty, so none of the four is "current"
+        // and all four have to restart.
+        for difficulty in Difficulty::ALL {
+            let mut game = game_with_word("BANANA");
+            assert_eq!(game.difficulty(), None);
+            assert!(
+                game.set_difficulty(difficulty),
+                "{} should restart out of a custom list",
+                difficulty.label()
+            );
+            assert_eq!(game.difficulty(), Some(difficulty));
+        }
     }
 
     #[test]

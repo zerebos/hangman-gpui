@@ -27,11 +27,11 @@ as the word list — a budget you can trade a guess out of for
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 45 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
+engine (with 49 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (28 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 133 tests, and
+(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 137 tests, and
 `cargo test` runs the lot in well under a second. The word lists and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -187,6 +187,7 @@ word list. The streak deliberately does neither, which is the point of it.
 | Give up on the current word (counts as a loss) | `Change Word` button, or `Ctrl+N` |
 | Load your own word list | `Open word list…` button, or `Ctrl+O` |
 | Change difficulty (starts a fresh match, and changes the guess budget) | The Easy / Medium / Hard / Insane buttons |
+| Replay the difficulty you just finished | The button already selected, once the match is over |
 | Show the lifetime stats | The `Stats` button in the toolbar |
 | Quit | Close the window |
 
@@ -196,7 +197,10 @@ upper-cased, and lines with no letters in them are dropped.
 A *match* is one pass through the whole word list — ten words for the bundled
 lists, drawn at random without repeats. When the list runs out the match is
 scored (more wins than losses, fewer, or a tie) and you pick a difficulty or a
-new word list to start over.
+new word list to start over — including the difficulty you were already on,
+which is the one click that restarts it. Mid-match that same click does
+nothing, so the word in hand survives a stray press on the button that is
+already selected.
 
 ## The guess budget
 

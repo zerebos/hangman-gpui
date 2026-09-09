@@ -584,7 +584,15 @@ impl HangmanView {
     }
 
     fn set_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
-        self.game.set_difficulty(difficulty);
+        // The pills are a `ButtonGroup`, so the selected one is still a button
+        // and clicking it still fires. `Game::set_difficulty` refuses that
+        // click mid-match and says so — take nothing else down with it, or a
+        // re-selection would wipe the match score and the notice while the
+        // word stayed put. It does still restart once the match is over,
+        // which is the footer's "pick a difficulty to start a new match".
+        if !self.game.set_difficulty(difficulty) {
+            return;
+        }
         // A fresh match, so the match score starts again from zero. The streak
         // and the lifetime tally are untouched on purpose — see `crate::stats`.
         self.session.start_match();
