@@ -3,9 +3,10 @@
 A Rust + [GPUI](https://www.gpui.rs/) port of [`zerebos/Hangman`](https://github.com/zerebos/Hangman),
 a 2015 Java/Swing hangman game. Same rules, same word lists, same layout, the
 same two sound cues and the same (slightly unhinged) alert messages — rebuilt
-with [gpui-kit](https://gpui-kit.com) instead of Swing. The gallows is the one
-thing that is not the original's: it is drawn line by line at run time rather
-than shipped as pictures. See
+with [gpui-kit](https://gpui-kit.com) instead of Swing. Two things are not the
+original's: the gallows is drawn line by line at run time rather than shipped as
+pictures, and difficulty now sets [the guess budget](#the-guess-budget) as well
+as the word list. See
 [Differences from the original](#differences-from-the-original).
 
 ```
@@ -25,11 +26,12 @@ than shipped as pictures. See
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 28 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
-keeps the streak (25 more), [`src/settings.rs`](src/settings.rs) is the equally
+engine (with 35 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
+keeps the streak (26 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), and [`src/ui/`](src/ui/) is everything GPUI. The word lists and the
+(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 121 tests, and
+`cargo test` runs the lot in well under a second. The word lists and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
 
@@ -182,7 +184,7 @@ word list. The streak deliberately does neither, which is the point of it.
 | Next word after a game ends | `New Game?` button, or Enter / Space |
 | Give up on the current word (counts as a loss) | `Change Word` button, or `Ctrl+N` |
 | Load your own word list | `Open word list…` button, or `Ctrl+O` |
-| Change difficulty (starts a fresh match) | The Easy / Medium / Hard / Insane buttons |
+| Change difficulty (starts a fresh match, and changes the guess budget) | The Easy / Medium / Hard / Insane buttons |
 | Show the lifetime stats | The `Stats` button in the toolbar |
 | Quit | Close the window |
 
@@ -193,6 +195,27 @@ A *match* is one pass through the whole word list — ten words for the bundled
 lists, drawn at random without repeats. When the list runs out the match is
 scored (more wins than losses, fewer, or a tie) and you pick a difficulty or a
 new word list to start over.
+
+## The guess budget
+
+How many wrong guesses you get is part of the difficulty, not a constant:
+
+| Difficulty | Wrong guesses | Word multiplier |
+| --- | ---: | ---: |
+| Easy | 10 | ×1 |
+| Medium | 8 | ×2 |
+| Hard | 7 | ×3 |
+| Insane | 6 | ×4 |
+| A word list of your own | 6 | ×1 |
+
+Insane is the original game: six guesses and the classic figure. Everything
+easier buys you slack, and the drawing spends it — the gallows has ten body
+parts, six of which make a whole hangman and four of which are the hands and
+feet, so one wrong guess is always exactly one new part however many you get.
+Ten is the ceiling for that reason and not an arbitrary one.
+
+A word list you load from a file gets six, because nothing in a `.txt` file
+says how hard it is meant to be.
 
 ## Scoring
 
@@ -206,11 +229,14 @@ your head while you play:
 | Term | What it is |
 | --- | --- |
 | `50` | the flat rate for solving a word at all |
-| `10 × guesses left` | your unspent budget, so a clean win beats a scrape by 50 before the weight |
+| `10 × guesses left` | your unspent budget, so a clean win beats a last-guess scrape by ten points per guess the difficulty gave you |
 | difficulty weight | Easy 1, Medium 2, Hard 3, Insane 4 — and 1 for a word list of your own |
 | streak steps | `min(streak − 1, 4)`, so the bonus builds to 100 and stops there |
 
-The best a single word can do is a clean Insane win on a streak:
+Easy hands out the most guesses to leave unspent and Insane the fewest, but the
+weight more than makes up for it, so playing up always pays: a clean win is
+worth 150 on Easy, 260 on Medium, 360 on Hard and 440 on Insane before any
+streak. The best a single word can do is a clean Insane win on a streak:
 `(50 + 60) × 4 + 100` = **540**. The worst is **60**: an Easy word solved on the
 very last guess you had, with no streak behind it. A word you lose, or give up
 on, is worth nothing.
@@ -256,7 +282,11 @@ per difficulty — is behind the `Stats` button in the toolbar and is
   frame. It stays sharp at any size, takes its colours from the theme instead
   of being a fixed image that only suits one, draws each new part on rather
   than cutting to the next frame, and is not tied to a budget of six wrong
-  guesses.
+  guesses — which is what let difficulty start changing that budget.
+- **Difficulty changes the rules, not just the list.** The original had a
+  `setMaximumWrongGuesses` setter that nothing ever called, so every difficulty
+  gave you the same six guesses. Here Easy gives 10, Medium 8, Hard 7 and
+  Insane the original's 6 — see [The guess budget](#the-guess-budget).
 - **The window resizes.** The original was a fixed, non-resizable 800×400.
 - **Scoring replaced the tally.** The original's scoreboard was two numbers,
   `Wins` and `Losses` for the match in hand. Here it is the match's points, the
@@ -286,10 +316,18 @@ the order they were argued about rather than in any committed order.
 3. **Structured word packs.** Move the four ten-word lists into a serde format
    that carries a category, a hint and a clue per word, so a match no longer
    exhausts the pool.
-4. **Difficulty that changes the guess budget.** `MAX_WRONG_GUESSES` is a hard 6
-   today. Item 6 unblocked it: the drawing now takes the budget as an argument
-   and finishes the figure on the last guess whatever that budget is, so all
-   that is left is letting each difficulty pick one.
+4. **Difficulty that changes the guess budget** *(done).* The budget was a hard
+   6 for everyone; it is `Difficulty::guess_budget` now — 10 on Easy, 8 on
+   Medium, 7 on Hard and the original's 6 on Insane, with 6 for a word list of
+   your own. The counter, the pips and the drawing all follow it, and the six
+   the original gave everybody survives as `DEFAULT_GUESS_BUDGET`, the fallback
+   for a game with no difficulty behind it. Item 6 is what made it a small
+   change: the gallows already took the budget as an argument, and its ten body
+   parts are exactly what a budget of 6..=10 needs to draw one new part per
+   wrong guess. See [The guess budget](#the-guess-budget). It also makes item 1
+   cheaper — a hint priced "in exchange for a wrong guess" now spends a budget
+   that difficulty already sizes, so the easy lists can afford one and Insane
+   can be made to hurt, with no second knob to invent.
 
 ### UI and UX
 

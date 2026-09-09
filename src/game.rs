@@ -20,12 +20,15 @@ use std::collections::BTreeSet;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
-/// How many wrong guesses a player gets before losing the game.
+/// The classic guess budget: six wrong guesses, a whole hangman and no more.
 ///
-/// The Java original had a `setMaximumWrongGuesses` setter, but nothing ever
-/// called it — so difficulty changes the word list and nothing else. That
-/// behaviour is preserved here by making the budget a constant.
-pub const MAX_WRONG_GUESSES: usize = 6;
+/// The Java original had a `setMaximumWrongGuesses` setter that nothing ever
+/// called, so its budget was a hard six whatever you were playing. It is no
+/// longer a maximum here — [`Difficulty::guess_budget`] hands out up to ten —
+/// but it stays as the fallback for a game with no difficulty behind it: a
+/// word list loaded from a file is played by the original's rules, because
+/// nothing about the file says how hard it is meant to be.
+pub const DEFAULT_GUESS_BUDGET: usize = 6;
 
 /// Which bundled word list a match is played from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -59,16 +62,46 @@ impl Difficulty {
 
     /// How much this difficulty multiplies a solved word by.
     ///
-    /// The rules themselves do not use this — the guess budget is the same on
-    /// all four (see [`MAX_WRONG_GUESSES`]) — but which list you chose is a
+    /// The rules themselves do not use this — [`Difficulty::guess_budget`] is
+    /// difficulty's only grip on the rules — but which list you chose is a
     /// property of the difficulty rather than of the scoreboard, so the number
     /// lives here and [`crate::stats`] does the arithmetic with it.
+    ///
+    /// The weight climbs as the budget falls, and the weight wins: a clean win
+    /// is worth 150 on Easy, 260 on Medium, 360 on Hard and 440 on Insane, so
+    /// playing up always pays even though it buys fewer guesses to spend.
+    /// `a_clean_win_pays_more_the_harder_the_list` in [`crate::stats`] guards
+    /// that, because it is the pair of numbers that could quietly stop being
+    /// true if either were tuned on its own.
     pub fn weight(self) -> u32 {
         match self {
             Difficulty::Easy => 1,
             Difficulty::Medium => 2,
             Difficulty::Hard => 3,
             Difficulty::Insane => 4,
+        }
+    }
+
+    /// How many wrong guesses this difficulty allows before the word is lost.
+    ///
+    /// This is the one thing difficulty changes about the *rules*; the Java
+    /// original changed nothing but the word list. The four numbers are chosen
+    /// to stay inside what [`crate::gallows`] can draw: it has
+    /// [`PARTS`](crate::gallows::PARTS)`.len()` = 10 body parts, of which
+    /// [`CORE_PARTS`](crate::gallows::CORE_PARTS) = 6 make the classic figure,
+    /// and `part_count` clamps a budget into `CORE_PARTS..=PARTS.len()`. A
+    /// budget anywhere in 6..=10 therefore buys exactly one new body part per
+    /// wrong guess — no stage drawing two at once, none repeating — which is
+    /// what the four extra parts were added for.
+    ///
+    /// Insane keeps the classic six, so the hardest setting is the game the
+    /// original shipped; each step down the ladder adds slack instead.
+    pub fn guess_budget(self) -> usize {
+        match self {
+            Difficulty::Easy => 10,
+            Difficulty::Medium => 8,
+            Difficulty::Hard => 7,
+            Difficulty::Insane => DEFAULT_GUESS_BUDGET,
         }
     }
 
@@ -192,6 +225,14 @@ fn sanitize_words(words: impl IntoIterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
+/// The guess budget a match on `difficulty` is played with.
+///
+/// `None` — a word list the player loaded from a file — gets the original's
+/// [`DEFAULT_GUESS_BUDGET`], since nothing about a file says how hard it is.
+fn budget_for(difficulty: Option<Difficulty>) -> usize {
+    difficulty.map_or(DEFAULT_GUESS_BUDGET, Difficulty::guess_budget)
+}
+
 /// A hangman match in progress.
 ///
 /// Construct one with [`Game::new`] (or [`Game::with_seed`] for reproducible
@@ -216,6 +257,10 @@ pub struct Game {
     // out of sync.
     guessed: BTreeSet<char>,
     wrong_guesses: usize,
+    /// How many wrong guesses this game allows, from [`budget_for`]. It is
+    /// fixed for the whole match — only `reset` moves it — but it is read on
+    /// every guess, so it lives next to the counter it is compared against.
+    guess_budget: usize,
     result: Option<GameResult>,
     // Per-match, and reset by `reset` along with the word pool: these exist so
     // `finish_match` can compare them, which is a *rule*. Points, streaks and
@@ -285,6 +330,7 @@ impl Game {
             word: String::new(),
             guessed: BTreeSet::new(),
             wrong_guesses: 0,
+            guess_budget: budget_for(difficulty),
             result: None,
             words_won: 0,
             words_lost: 0,
@@ -360,7 +406,7 @@ impl Game {
             }
         } else {
             self.wrong_guesses += 1;
-            if self.wrong_guesses >= MAX_WRONG_GUESSES {
+            if self.wrong_guesses >= self.guess_budget {
                 self.end_game(GameResult::Lost, GuessResult::Wrong)
             } else {
                 GuessOutcome {
@@ -450,6 +496,7 @@ impl Game {
 
     fn reset(&mut self, difficulty: Option<Difficulty>, words: Vec<String>) {
         self.difficulty = difficulty;
+        self.guess_budget = budget_for(difficulty);
         self.total_words = words.len();
         self.remaining_words = words;
         self.words_won = 0;
@@ -504,16 +551,27 @@ impl Game {
             .collect()
     }
 
-    /// How many wrong guesses have been made this game (0..=[`MAX_WRONG_GUESSES`]).
+    /// How many wrong guesses have been made this game
+    /// (0..=[`guess_budget`](Game::guess_budget)).
     ///
     /// This doubles as the index of the gallows drawing stage.
     pub fn wrong_guesses(&self) -> usize {
         self.wrong_guesses
     }
 
+    /// How many wrong guesses this game allows in total.
+    ///
+    /// [`Difficulty::guess_budget`] for a bundled list, or
+    /// [`DEFAULT_GUESS_BUDGET`] for one loaded from a file. The UI needs it
+    /// for the wrong-guess counter, for the row of pips and for the gallows,
+    /// which spreads its body parts over whatever budget it is handed.
+    pub fn guess_budget(&self) -> usize {
+        self.guess_budget
+    }
+
     /// How many wrong guesses are still affordable.
     pub fn remaining_guesses(&self) -> usize {
-        MAX_WRONG_GUESSES.saturating_sub(self.wrong_guesses)
+        self.guess_budget.saturating_sub(self.wrong_guesses)
     }
 
     /// Whether the current game has been resolved, one way or another.
@@ -602,13 +660,24 @@ mod tests {
         }
     }
 
-    /// Burn all six wrong guesses on letters that are not in the current word.
+    /// Burn the whole guess budget on letters that are not in the current word.
     fn lose_current_game(game: &mut Game) {
-        let word = game.word().to_string();
-        let wrong: Vec<char> = ('A'..='Z').filter(|c| !word.contains(*c)).collect();
-        for letter in wrong.into_iter().take(MAX_WRONG_GUESSES) {
+        for letter in wrong_letters(game) {
             game.guess(letter);
         }
+    }
+
+    /// As many letters as the budget allows, none of them in the current word.
+    ///
+    /// The longest bundled word has eleven distinct letters, so there are
+    /// always at least fifteen to choose from — comfortably more than the ten
+    /// the most generous budget spends.
+    fn wrong_letters(game: &Game) -> Vec<char> {
+        let word = game.word().to_string();
+        ('A'..='Z')
+            .filter(|c| !word.contains(*c))
+            .take(game.guess_budget())
+            .collect()
     }
 
     #[test]
@@ -639,6 +708,110 @@ mod tests {
         assert!(Difficulty::Insane.weight() > Difficulty::Easy.weight());
     }
 
+    // --------------------------------------------------- the guess budget
+
+    #[test]
+    fn each_difficulty_hands_out_its_own_guess_budget() {
+        assert_eq!(
+            Difficulty::ALL.map(Difficulty::guess_budget),
+            [10, 8, 7, 6],
+            "easy is the most forgiving; insane is the original's six"
+        );
+    }
+
+    #[test]
+    fn the_hardest_difficulty_is_the_original_game() {
+        assert_eq!(Difficulty::Insane.guess_budget(), DEFAULT_GUESS_BUDGET);
+        for difficulty in Difficulty::ALL {
+            assert!(
+                difficulty.guess_budget() >= Difficulty::Insane.guess_budget(),
+                "{} is stingier than Insane",
+                difficulty.label()
+            );
+        }
+    }
+
+    #[test]
+    fn every_budget_buys_exactly_one_body_part_per_wrong_guess() {
+        // Why these four numbers and not any others: `crate::gallows` has ten
+        // parts and clamps a budget into `CORE_PARTS..=PARTS.len()`, so only a
+        // budget in 6..=10 draws one new part per guess. Outside it the
+        // drawing still works, but a stage would draw two parts or repeat one.
+        use crate::gallows::{CORE_PARTS, PARTS, parts_drawn};
+        for difficulty in Difficulty::ALL {
+            let budget = difficulty.guess_budget();
+            let label = difficulty.label();
+            assert!(
+                (CORE_PARTS..=PARTS.len()).contains(&budget),
+                "{label}'s budget of {budget} is outside what the gallows draws"
+            );
+            for wrong in 0..=budget {
+                assert_eq!(parts_drawn(budget, wrong), wrong, "{label} at {wrong}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_game_lasts_exactly_its_difficultys_budget_and_not_a_guess_less() {
+        for difficulty in Difficulty::ALL {
+            let label = difficulty.label();
+            let budget = difficulty.guess_budget();
+            let mut game = Game::with_seed(difficulty, 7);
+            assert_eq!(game.guess_budget(), budget, "{label}");
+            assert_eq!(game.remaining_guesses(), budget, "{label}");
+
+            for (spent, letter) in wrong_letters(&game).into_iter().enumerate() {
+                assert!(!game.is_game_over(), "{label} was over after {spent}");
+                let outcome = game.guess(letter);
+                assert_eq!(outcome.result, GuessResult::Wrong, "{label}");
+                assert_eq!(game.wrong_guesses(), spent + 1, "{label}");
+                assert_eq!(game.remaining_guesses(), budget - spent - 1, "{label}");
+            }
+
+            assert!(game.is_game_over(), "{label} survived its whole budget");
+            assert_eq!(game.game_result(), Some(GameResult::Lost), "{label}");
+            assert_eq!(game.remaining_guesses(), 0, "{label}");
+        }
+    }
+
+    #[test]
+    fn a_word_list_of_your_own_is_played_by_the_originals_rules() {
+        let game = game_with_word("BANANA");
+        assert_eq!(game.difficulty(), None);
+        assert_eq!(game.guess_budget(), DEFAULT_GUESS_BUDGET);
+        assert_eq!(game.remaining_guesses(), DEFAULT_GUESS_BUDGET);
+    }
+
+    #[test]
+    fn changing_difficulty_mid_match_changes_the_budget_with_it() {
+        let mut game = Game::with_seed(Difficulty::Insane, 5);
+        assert_eq!(game.guess_budget(), 6);
+
+        // Half way through a word, with a wrong guess already spent.
+        let spend = wrong_letters(&game)[0];
+        game.guess(spend);
+        assert_eq!(game.remaining_guesses(), 5);
+
+        game.set_difficulty(Difficulty::Easy);
+        assert_eq!(game.guess_budget(), 10);
+        assert_eq!(game.remaining_guesses(), 10, "the new word starts fresh");
+
+        game.set_difficulty(Difficulty::Hard);
+        assert_eq!(game.guess_budget(), 7);
+
+        // And a word list of the player's own gives the classic six back.
+        game.set_word_list(vec!["BANANA".to_string()])
+            .expect("word list is not empty");
+        assert_eq!(game.guess_budget(), DEFAULT_GUESS_BUDGET);
+    }
+
+    #[test]
+    fn a_rejected_word_list_leaves_the_budget_alone() {
+        let mut game = Game::with_seed(Difficulty::Easy, 2);
+        assert!(game.set_word_list(vec!["   ".to_string()]).is_err());
+        assert_eq!(game.guess_budget(), Difficulty::Easy.guess_budget());
+    }
+
     #[test]
     fn correct_guess_reveals_every_occurrence() {
         let mut game = game_with_word("BANANA");
@@ -653,7 +826,7 @@ mod tests {
         let mut game = game_with_word("BANANA");
         assert_eq!(game.guess('Z').result, GuessResult::Wrong);
         assert_eq!(game.wrong_guesses(), 1);
-        assert_eq!(game.remaining_guesses(), MAX_WRONG_GUESSES - 1);
+        assert_eq!(game.remaining_guesses(), DEFAULT_GUESS_BUDGET - 1);
         assert_eq!(game.display(), "______");
     }
 
@@ -710,7 +883,7 @@ mod tests {
             assert!(!game.is_game_over());
         }
         let outcome = game.guess('H');
-        assert_eq!(game.wrong_guesses(), MAX_WRONG_GUESSES);
+        assert_eq!(game.wrong_guesses(), DEFAULT_GUESS_BUDGET);
         assert_eq!(outcome.game, Some(GameResult::Lost));
         assert!(game.is_game_over());
         assert!(!game.is_won());
