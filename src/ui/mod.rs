@@ -20,7 +20,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::audio::Audio;
-use crate::game::{Cell, Difficulty, Game, GameResult, GuessResult, MatchOutcome};
+use crate::game::{Cell, Difficulty, Game, GameResult, GuessResult, HintResult, MatchOutcome};
 use crate::settings::{Rect, Settings, ThemeChoice, WindowFrame};
 use crate::stats::{DifficultyStats, Session};
 use gallows::gallows;
@@ -44,6 +44,20 @@ const FILE_ERROR: &str = "Sorry, we couldnt read in your file.";
 
 /// What the status line says when there is nothing else to report.
 const IDLE_HINT: &str = "Type a letter, or click one above.";
+
+/// What the Hint button promises, and the two reasons it can be off.
+///
+/// The price is in the tooltip rather than behind the click because it is a
+/// real one: a hint spends a wrong guess, which is a body part on the gallows
+/// and ten points off the word.
+const HINT_TOOLTIP: &str = "Reveal a letter — costs one wrong guess (Ctrl+H)";
+const HINT_TOOLTIP_LAST_GUESS: &str = "No hint: it would cost the last guess you have (Ctrl+H)";
+const HINT_TOOLTIP_OVER: &str = "No hint: this word is already finished (Ctrl+H)";
+
+/// The alert line after a hint lands. It names the letter, because the word
+/// row is not the only place the player is looking, and it says what the hint
+/// cost, because the pip that just turned red does not explain itself.
+const HINT_GIVEN: &str = "That cost you a guess:";
 
 // The original's letter grid: seven buttons per row, with V-Z indented by one
 // cell because the Java wrap rule started the fourth row at column 1.
@@ -277,7 +291,7 @@ fn percent(rate: f32) -> String {
     format!("{:.0}%", rate * 100.)
 }
 
-actions!(hangman, [OpenWordList, ChangeWord]);
+actions!(hangman, [OpenWordList, ChangeWord, Hint]);
 
 /// A line of feedback, styled after the original's `alertMessage` label:
 /// italic, and green for good news or red for bad.
@@ -471,6 +485,46 @@ impl HangmanView {
         self.record(Some(GameResult::Lost), match_);
         self.notice = Some(Notice::bad(GAVE_UP));
         cx.notify();
+    }
+
+    /// Buy a letter with a wrong guess.
+    ///
+    /// Everything after the call is the guess path verbatim, because as far as
+    /// the rest of the view is concerned a hint *is* a guess: the letter goes
+    /// into `last_guess`, so the cells it turns over fade up and its key
+    /// settles into the colour a correct guess earns; the wrong-guess counter
+    /// it spent moves the pips and draws the next body part; and the word can
+    /// end on it, which is scored exactly as any other win.
+    fn hint(&mut self, cx: &mut Context<Self>) {
+        let outcome = self.game.hint();
+        // Refused — the button was disabled, or the shortcut was pressed
+        // anyway. `Game::hint` changed nothing, so neither does this.
+        let HintResult::Revealed(letter) = outcome.result else {
+            return;
+        };
+        self.last_guess = Some(letter);
+
+        let earned = self.record(outcome.game, outcome.match_);
+        self.notice = match outcome.game {
+            // A hint can complete the word, and that is a win like any other.
+            Some(GameResult::Won) => {
+                self.audio.play_win();
+                Some(Notice::good(format!("{GAME_WON} +{earned}")))
+            }
+            // Unreachable: `Game::hint` refuses at one guess left precisely so
+            // a hint can never be the guess that loses the word. Handled
+            // rather than asserted, so the rules stay the rules module's.
+            Some(GameResult::Lost) => {
+                self.audio.play_loss();
+                Some(Notice::bad(GAME_LOST))
+            }
+            None => Some(Notice::good(format!("{HINT_GIVEN} {letter}."))),
+        };
+        cx.notify();
+    }
+
+    fn on_hint(&mut self, _: &Hint, _: &mut Window, cx: &mut Context<Self>) {
+        self.hint(cx);
     }
 
     /// Put a finished word — and, when it was the last of the match, the match
@@ -673,6 +727,21 @@ impl HangmanView {
         })
     }
 
+    /// What the Hint button says it will do, or why it will not.
+    ///
+    /// The disabled tooltip is the whole reason the button stays on screen
+    /// greyed out instead of disappearing: "it would cost your last guess" is
+    /// a rule worth learning, and a button that vanishes teaches nothing.
+    fn hint_tooltip(&self) -> &'static str {
+        if self.game.can_hint() {
+            HINT_TOOLTIP
+        } else if self.game.is_game_over() {
+            HINT_TOOLTIP_OVER
+        } else {
+            HINT_TOOLTIP_LAST_GUESS
+        }
+    }
+
     /// What the title bar shows beside the wordmark.
     fn subtitle(&self) -> SharedString {
         match self.game.difficulty() {
@@ -796,7 +865,18 @@ impl HangmanView {
                     .child(
                         // Outside the title bar, so — unlike the theme toggle —
                         // this needs no `.occlude()`: nothing behind it is
-                        // waiting to turn the click into a window drag.
+                        // waiting to turn the click into a window drag. The
+                        // same goes for the three buttons after it.
+                        Button::new("hint")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Eye)
+                            .label("Hint")
+                            .disabled(!self.game.can_hint())
+                            .tooltip(self.hint_tooltip())
+                            .on_click(cx.listener(|this, _, _, cx| this.hint(cx))),
+                    )
+                    .child(
                         Button::new("toggle-stats")
                             .small()
                             .ghost()
@@ -1590,6 +1670,7 @@ impl Render for HangmanView {
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(Self::on_open_word_list))
             .on_action(cx.listener(Self::on_change_word))
+            .on_action(cx.listener(Self::on_hint))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)

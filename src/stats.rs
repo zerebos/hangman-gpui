@@ -740,4 +740,84 @@ mod tests {
             Stats::default()
         );
     }
+
+    // ---------------------------------------------------- hints cost guesses
+
+    /// Solve `SOLVED` from a one-word list, optionally spending a hint on the
+    /// way, and report what it scored and the streak it left behind.
+    ///
+    /// This is the one place the tally is driven by a real [`Game`] rather
+    /// than by hand, because the claim being checked is exactly that nothing
+    /// in this module has to know hints exist: the word arrives here as a win
+    /// with one guess fewer left, and that is the whole price.
+    fn solve_with(hint: bool) -> (u32, u32) {
+        let mut game = crate::game::Game::from_words_with_seed(vec![SOLVED.into()], 11)
+            .expect("word list is not empty");
+        let mut session = Session::default();
+
+        if hint {
+            assert!(
+                matches!(game.hint().result, crate::game::HintResult::Revealed(_)),
+                "a fresh word should have a hint to give"
+            );
+        }
+        for letter in SOLVED.chars() {
+            game.guess(letter);
+        }
+        assert!(game.is_won());
+
+        let points =
+            session.record_word(game.difficulty(), GameResult::Won, game.remaining_guesses());
+        (points, session.stats().streak)
+    }
+
+    /// A word with no repeated letters, so a hint can never finish it early.
+    const SOLVED: &str = "PLANET";
+
+    #[test]
+    fn a_hinted_win_costs_one_guess_and_nothing_else() {
+        let (hinted, hinted_streak) = solve_with(true);
+        let (plain, plain_streak) = solve_with(false);
+
+        // The only difference between the two is one unspent guess, which the
+        // formula already prices. There is no separate hint penalty, and this
+        // is the test that says so.
+        assert_eq!(
+            plain - hinted,
+            POINTS_PER_REMAINING_GUESS,
+            "a hint should cost exactly one guess' worth of points"
+        );
+        assert_eq!(
+            hinted,
+            word_points(None, crate::game::DEFAULT_GUESS_BUDGET - 1, 1),
+            "a hinted win is a win with one fewer guess remaining"
+        );
+        assert_eq!(hinted_streak, plain_streak);
+    }
+
+    #[test]
+    fn a_hint_does_not_break_the_streak() {
+        let mut stats = Stats::default();
+        won(&mut stats, Difficulty::Hard);
+        won(&mut stats, Difficulty::Hard);
+        assert_eq!(stats.streak, 2);
+
+        // A word solved with a hint is a word solved: it extends the run like
+        // any other win, and it is worth the streak bonus that run has earned.
+        let hinted = stats.record_word(
+            Some(Difficulty::Hard),
+            GameResult::Won,
+            crate::game::DEFAULT_GUESS_BUDGET - 1,
+        );
+        assert_eq!(stats.streak, 3);
+        assert_eq!(stats.best_streak, 3);
+        assert_eq!(
+            hinted,
+            word_points(
+                Some(Difficulty::Hard),
+                crate::game::DEFAULT_GUESS_BUDGET - 1,
+                3
+            )
+        );
+    }
 }
