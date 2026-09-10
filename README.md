@@ -130,7 +130,7 @@ usual place for your platform:
       "x": 460.0,
       "y": 160.0,
       "width": 1000.0,
-      "height": 760.0
+      "height": 800.0
     },
     "maximized": false
   },
@@ -166,7 +166,8 @@ played from a word list of your own count in the totals and the streak but in
 none of the four buckets, because they belong to no difficulty.
 
 Nothing in there is required: delete the file, edit it by hand, or leave it on a
-read-only disk, and the game falls back to its defaults — dark, centred, Easy —
+read-only disk, and the game falls back to its defaults — dark, centred at
+1000 × 800, Easy —
 saying so on stderr at worst. A saved window that no longer fits the monitors
 you have is resized and moved back on screen rather than trusted, so unplugging
 a second monitor can never strand the window somewhere you cannot reach it.

@@ -168,6 +168,17 @@ to `ThemeMode::Dark`. Order matters.
 `Some(window)` from a click handler — `Theme::change` calls `window.refresh()`
 itself (`theme/mod.rs:261-262`), so you don't need to.
 
+The **scrollbar mode is the same story**: `theme::init` also calls
+`sync_scrollbar_appearance`, which picks `Scrolling` or `Hover` from the
+desktop's auto-hide preference (`theme/mod.rs:215-223`). `main.rs` overrides it
+with `Theme::set_scrollbar_mode(ScrollbarMode::Always, cx)` **after**
+`gpui_kit::init` for the same reason, because the play column is the only thing
+in the window that scrolls and the other two modes only show the bar once you
+are already scrolling. Unlike the theme mode, this one *survives*
+`Theme::change` — `apply_config` does not touch it and `set_scrollbar_mode`
+syncs the Base projection itself — so the light/dark toggle does not undo it and
+it needs setting exactly once.
+
 ### 3. Don't trust gpui-kit docs/examples over the compiler
 
 Names that do **not** exist in gpui-kit 0.6.0, but that external gpui-kit

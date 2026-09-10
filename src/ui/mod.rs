@@ -13,6 +13,7 @@ use std::time::Duration;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Disableable as _, IconName, Root, Selectable as _,
     Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex, v_flex,
@@ -31,9 +32,25 @@ use gallows::gallows;
 pub const KEY_CONTEXT: &str = "Hangman";
 
 /// The size the window opens at when there is nothing saved to restore.
-pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1000.), px(760.));
+///
+/// The height is picked so the play column does not scroll in the state that
+/// needs the most room *of the ones that fit at all*: a finished word, where
+/// the result panel replaces the one-line status. That measures 771px with the
+/// shortcut bar in place, so this is that plus slack, because a wrapped alert
+/// line or the end-of-match footer would put an exact fit straight back into
+/// scrolling.
+///
+/// It is deliberately not a promise that nothing ever scrolls. The lifetime
+/// stats fold out inline under the result, and that state wants a window
+/// around 1110px tall — bigger than most laptops have — so the column has to
+/// stay scrollable whatever this says.
+pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1000.), px(800.));
 /// The smallest the window may be. Below this the toolbar wraps into the board
 /// and the stage column starts clipping the artwork.
+///
+/// This is a floor on what stays *usable*, not on what fits without
+/// scrolling — see [`DEFAULT_WINDOW_SIZE`] for why the two cannot be the same
+/// number.
 pub const MIN_WINDOW_SIZE: Size<Pixels> = size(px(880.), px(660.));
 
 // The original's alert strings, verbatim.
@@ -1821,7 +1838,13 @@ impl HangmanView {
             .flex_1()
             .h_full()
             .gap_3()
-            .overflow_y_scroll()
+            // A real scrollbar rather than a bare `overflow_y_scroll`: this
+            // column is the only thing in the window that can scroll, and
+            // until it drew one there was nothing to say so — the content
+            // simply stopped at the bottom edge. gpui-kit hides the bar
+            // whenever the content fits, so it costs nothing in the states
+            // that need no scrolling.
+            .overflow_y_scrollbar()
             .child(self.render_scoreboard(cx))
             .child(self.render_word_panel(cx))
             .child(self.render_keyboard(cx))

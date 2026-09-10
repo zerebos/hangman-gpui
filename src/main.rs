@@ -1,5 +1,6 @@
 //! Hangman — a Rust + GPUI port of Zack Rauen's 2015 Java hangman.
 
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{Root, Theme, TitleBar};
 use gpui_kit::*;
 
@@ -27,6 +28,18 @@ fn main() {
         // `Theme::sync_system_appearance(None, cx)` to follow the desktop
         // instead — the in-window toggle overrides either way.
         Theme::change(settings.theme, None, cx);
+
+        // The play column is the only thing in this window that scrolls, and
+        // with the default mode there was nothing to say so: the bar appears
+        // once you are already scrolling, which is no use to someone who
+        // cannot tell there is more below. `Always` draws it whenever the
+        // content overflows and nothing at all when it fits, so it is a
+        // "there is more" marker rather than furniture. This overrides
+        // `theme::init`'s `sync_scrollbar_appearance`, which follows the
+        // desktop's auto-hide preference — hence after `gpui_kit::init`, like
+        // the theme itself. The mode survives `Theme::change`, so the
+        // light/dark toggle does not undo it.
+        Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);
 
         // The original's Game menu accelerators, minus the menu bar.
         cx.bind_keys([
