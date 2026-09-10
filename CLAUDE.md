@@ -41,7 +41,7 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 142 tests and finishes in under a second — every one of them is
+`cargo test` is 147 tests and finishes in under a second — every one of them is
 in-file in a module with no GPUI types in it, so nothing there opens a window.
 
 ## Layout
@@ -83,7 +83,17 @@ in-file in a module with no GPUI types in it, so nothing there opens a window.
   charge, a hint can never be the guess that *loses* a word, so `hint` checks
   the win and never the loss.
 - `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the element that
-  paints the gallows.
+  paints the gallows. The view is not testable, but the rule behind the
+  keyboard legend along the window's bottom edge is: `shortcut_legend` takes a
+  `&Game` and returns plain data, so its 5 in-file tests build no GPUI type and
+  open no window, exactly like the other four modules'. Keep that shape for
+  anything else pulled out of the view (roadmap item 9). Neither the legend nor
+  any toolbar tooltip spells a chord out: `Kbd::binding_for_action` and
+  `Button::tooltip_with_action` read it from the keymap `main.rs` registers, so
+  rebinding a shortcut there updates every place it is shown. The one
+  exception is `Enter`, which is handled in `on_key_down` rather than bound —
+  a `KeyBinding` would fire even when a letter key has been tabbed to — so it
+  has nothing in the keymap to read and `shortcut_kbd` spells it by hand.
 - `src/gallows.rs` — the gallows *drawing*, as plain coordinates: polylines in
   a fixed 300×350 design box, which body part belongs to which stage, and the
   transform that fits the box into the rectangle the window gives it. **No GPUI
