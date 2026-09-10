@@ -589,11 +589,40 @@ impl Game {
     /// — so it restarts as usual and returns `true`. A custom word list has
     /// no difficulty at all, so every pill restarts out of one.
     pub fn set_difficulty(&mut self, difficulty: Difficulty) -> bool {
-        if self.difficulty == Some(difficulty) && !self.is_match_over() {
+        if !self.would_switch_to(difficulty) {
             return false;
         }
         self.reset(Some(difficulty), difficulty.words());
         true
+    }
+
+    /// Would [`Game::set_difficulty`] actually do anything for `difficulty`?
+    ///
+    /// The predicate behind that method's `false`, split out so the UI can ask
+    /// *before* it acts: a switch throws the current word away, and whether
+    /// that word has to be paid for depends on whether the switch happens at
+    /// all. Keeping the rule in one place is the point — a copy of it in the
+    /// view would be one to get out of step.
+    pub fn would_switch_to(&self, difficulty: Difficulty) -> bool {
+        self.difficulty != Some(difficulty) || self.is_match_over()
+    }
+
+    /// Is there a started-but-unfinished word here — one that walking away
+    /// would cost you?
+    ///
+    /// True once a guess or a hint has landed on a word that is not yet won or
+    /// lost. This is the line between abandoning a word and simply choosing
+    /// where to start: picking a difficulty before you have played a letter
+    /// costs nothing, and every letter after that is a word in progress. Both
+    /// guesses and hints count, because `hint` records the letter it reveals in
+    /// the same set `guess` does.
+    ///
+    /// The UI charges a loss for one of these when the word is thrown away —
+    /// by a difficulty switch or a new word list — exactly as [`Game::give_up`]
+    /// does. Without it the streak has a free escape hatch, which is the one
+    /// thing the streak is not supposed to have.
+    pub fn has_word_to_lose(&self) -> bool {
+        !self.is_game_over() && !self.guessed.is_empty()
     }
 
     /// Abandon the current match and start a fresh one on a custom word list.
@@ -1202,6 +1231,88 @@ mod tests {
             Game::from_words_with_seed(vec!["CAT".into()], 5).expect("word list is not empty");
         assert_eq!(game.give_up(), Some(MatchOutcome::Loss));
         assert!(game.is_match_over());
+    }
+
+    #[test]
+    fn an_untouched_word_is_free_to_walk_away_from() {
+        // Picking a difficulty before you have played a letter is choosing
+        // where to start, not abandoning anything.
+        let game = Game::with_seed(Difficulty::Insane, 3);
+        assert!(!game.has_word_to_lose());
+    }
+
+    #[test]
+    fn one_guess_is_enough_to_make_a_word_worth_losing() {
+        let mut game = Game::with_seed(Difficulty::Insane, 3);
+        let spend = wrong_letters(&game)[0];
+        game.guess(spend);
+        assert!(game.has_word_to_lose());
+
+        // A right guess counts just the same as a wrong one.
+        let mut game = Game::with_seed(Difficulty::Insane, 3);
+        let hit = game.word().chars().next().expect("the word is not empty");
+        assert_eq!(game.guess(hit).result, GuessResult::Correct);
+        assert!(game.has_word_to_lose());
+    }
+
+    #[test]
+    fn a_hint_makes_a_word_worth_losing_too() {
+        // `hint` records the letter it reveals in the same set `guess` does, so
+        // a word you have only ever hinted at is still a word in progress.
+        let mut game = Game::with_seed(Difficulty::Easy, 4);
+        assert!(!game.has_word_to_lose());
+        assert!(matches!(game.hint().result, HintResult::Revealed(_)));
+        assert!(game.has_word_to_lose());
+    }
+
+    #[test]
+    fn a_finished_word_is_not_a_word_to_lose() {
+        // Won and lost words are already scored; walking away from one after
+        // the fact must not charge for it twice.
+        let mut game = game_with_word("BANANA");
+        win_current_game(&mut game);
+        assert_eq!(game.game_result(), Some(GameResult::Won));
+        assert!(!game.has_word_to_lose());
+
+        let mut game = Game::with_seed(Difficulty::Insane, 3);
+        lose_current_game(&mut game);
+        assert_eq!(game.game_result(), Some(GameResult::Lost));
+        assert!(!game.has_word_to_lose());
+    }
+
+    #[test]
+    fn would_switch_to_answers_for_set_difficulty() {
+        // The two have to agree, because the UI asks the predicate and then
+        // acts on the method.
+        let mut game = Game::with_seed(Difficulty::Hard, 6);
+        assert!(!game.would_switch_to(Difficulty::Hard));
+        for difficulty in Difficulty::ALL {
+            let mut copy = Game::with_seed(Difficulty::Hard, 6);
+            assert_eq!(
+                copy.would_switch_to(difficulty),
+                copy.set_difficulty(difficulty),
+                "{} disagreed",
+                difficulty.label()
+            );
+        }
+
+        // Over: every pill switches, the one just played included.
+        while game.give_up().is_none() {
+            assert!(game.new_game(), "the match still had words left");
+        }
+        for difficulty in Difficulty::ALL {
+            assert!(
+                game.would_switch_to(difficulty),
+                "{} should restart a finished match",
+                difficulty.label()
+            );
+        }
+
+        // A custom list belongs to no difficulty, so all four switch.
+        let game = game_with_word("BANANA");
+        for difficulty in Difficulty::ALL {
+            assert!(game.would_switch_to(difficulty), "{}", difficulty.label());
+        }
     }
 
     #[test]

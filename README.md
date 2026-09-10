@@ -27,11 +27,11 @@ as the word list — a budget you can trade a guess out of for
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 49 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
+engine (with 54 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (28 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 137 tests, and
+(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 142 tests, and
 `cargo test` runs the lot in well under a second. The word lists and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -187,6 +187,7 @@ word list. The streak deliberately does neither, which is the point of it.
 | Give up on the current word (counts as a loss) | `Change Word` button, or `Ctrl+N` |
 | Load your own word list | `Open word list…` button, or `Ctrl+O` |
 | Change difficulty (starts a fresh match, and changes the guess budget) | The Easy / Medium / Hard / Insane buttons |
+| Abandon the word you are on (counts as a loss) | Changing difficulty or loading a word list mid-word |
 | Replay the difficulty you just finished | The button already selected, once the match is over |
 | Show the lifetime stats | The `Stats` button in the toolbar |
 | Quit | Close the window |
@@ -201,6 +202,13 @@ new word list to start over — including the difficulty you were already on,
 which is the one click that restarts it. Mid-match that same click does
 nothing, so the word in hand survives a stray press on the button that is
 already selected.
+
+Leaving a word part-played is losing it. Switching difficulty or loading a new
+list while a word is in progress counts that word as a loss, ends your streak
+and says so, exactly as `Change Word` does — otherwise the quickest way out of a
+word you were about to fail would also be the one that cost nothing. A word you
+have not guessed a letter of yet is not in progress, so picking a difficulty
+before you start is free, and so is re-picking the one you are already on.
 
 ## The guess budget
 
@@ -334,7 +342,7 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. These are the nine ideas agreed for where it goes next, roughly in
+mirroring it. These are the eleven ideas agreed for where it goes next, roughly in
 the order they were argued about rather than in any committed order.
 
 ### Game and rules
@@ -391,6 +399,16 @@ the order they were argued about rather than in any committed order.
    unblocked item 4. The trade-off was real: it retired the bundled artwork.
 7. **Keyboard hints.** Surface the shortcuts in the window itself with gpui-kit's
    `Kbd` and `Tooltip::action`.
+10. **Try gpui-kit's `Modal` and `Dialog`.** The window has never used either —
+    the stats panel folds out inline and the warning before you abandon a word
+    is a tooltip, both because an unproven component API is the trap the project
+    notes warn about, not because a dialog would be wrong. Build one somewhere
+    small and see how it behaves: whether it takes the theme, whether Escape and
+    a click outside dismiss it, whether it traps focus, and how it reads on
+    Windows. If it comes out well there is more than one place for it — a
+    confirm before a difficulty switch costs you a word, a confirm before
+    `Reset stats` throws the lifetime tally away, and the end-of-match summary
+    are all currently shaped around not having one.
 
 ### Craft
 
@@ -401,6 +419,19 @@ the order they were argued about rather than in any committed order.
    not kept, because it belongs to the match and dies with it.
 9. **Make the UI testable.** Pull the pure helpers out of
    [`src/ui/mod.rs`](src/ui/mod.rs) — which has no tests at all — and cover them.
+11. **Resume the word you were on.** Closing the window mid-word is the last
+    silent way out of a word you are losing: the settings file keeps the theme,
+    the window, the difficulty and the lifetime stats, and nothing at all about
+    the word in flight, so quitting and relaunching is a free reroll that keeps
+    your streak. Charging a loss on close would shut that door, but it would
+    also tax someone who just quit for the night, and invisibly — they would
+    never see it happen. Saving the word instead means quitting is not an escape
+    because you come back to it: the word, the letters guessed, the wrong-guess
+    count, the pool still to play and the match's points, restored at launch.
+    That needs a new key in [`Settings`](src/settings.rs) and a way to rehydrate
+    a [`Game`](src/game.rs) from one, both under the existing rule that a
+    malformed value falls back rather than failing loudly. It is worth having on
+    its own account as much as for the hole it closes.
 
 **Not planned:** networked multiplayer — the original's external layer is the one
 thing the port deliberately dropped, and this would only bring it back — fetching
