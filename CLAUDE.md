@@ -41,11 +41,12 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 148 tests and finishes in under a second — every one of them is
+`cargo test` is 153 tests and finishes in under a second — every one of them is
 in-file in a module with no GPUI types in it, so nothing there opens a window.
-That holds even for the six in `src/ui/mod.rs`: they cover its prose helpers
-(`plural`, `points`, `reset_stats_summary`), which take plain data and return a
-`String`, and the test module imports them by name rather than with a
+That holds even for the eleven in `src/ui/mod.rs`: they cover its pure helpers
+(`shortcut_legend` from item 7, and `plural` / `points` /
+`reset_stats_summary` from item 10), which take plain data and return plain
+data, and the test module imports them by name rather than with a
 `use super::*` — see gotcha 10 for why that matters.
 
 ## Layout
@@ -87,7 +88,17 @@ That holds even for the six in `src/ui/mod.rs`: they cover its prose helpers
   charge, a hint can never be the guess that *loses* a word, so `hint` checks
   the win and never the loss.
 - `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the element that
-  paints the gallows.
+  paints the gallows. The view is not testable, but the rule behind the
+  keyboard legend along the window's bottom edge is: `shortcut_legend` takes a
+  `&Game` and returns plain data, so its 5 in-file tests build no GPUI type and
+  open no window, exactly like the other four modules'. Keep that shape for
+  anything else pulled out of the view (roadmap item 9). Neither the legend nor
+  any toolbar tooltip spells a chord out: `Kbd::binding_for_action` and
+  `Button::tooltip_with_action` read it from the keymap `main.rs` registers, so
+  rebinding a shortcut there updates every place it is shown. The one
+  exception is `Enter`, which is handled in `on_key_down` rather than bound —
+  a `KeyBinding` would fire even when a letter key has been tabbed to — so it
+  has nothing in the keymap to read and `shortcut_kbd` spells it by hand.
 - `src/gallows.rs` — the gallows *drawing*, as plain coordinates: polylines in
   a fixed 300×350 design box, which body part belongs to which stage, and the
   transform that fits the box into the rectangle the window gives it. **No GPUI
@@ -172,6 +183,17 @@ change theme and never again, which reads as a dialog bug rather than a theme
 one. `apply_theme` therefore passes `None` to `Theme::change` and calls
 `window.refresh()` itself, after the override is back in — refreshing first
 would paint the frame with the token that was just reset.
+
+The **scrollbar mode is the same story**: `theme::init` also calls
+`sync_scrollbar_appearance`, which picks `Scrolling` or `Hover` from the
+desktop's auto-hide preference (`theme/mod.rs:215-223`). `main.rs` overrides it
+with `Theme::set_scrollbar_mode(ScrollbarMode::Always, cx)` **after**
+`gpui_kit::init` for the same reason, because the play column is the only thing
+in the window that scrolls and the other two modes only show the bar once you
+are already scrolling. Unlike the theme mode, this one *survives*
+`Theme::change` — `apply_config` does not touch it and `set_scrollbar_mode`
+syncs the Base projection itself — so the light/dark toggle does not undo it and
+it needs setting exactly once.
 
 ### 3. Don't trust gpui-kit docs/examples over the compiler
 

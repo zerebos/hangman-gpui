@@ -15,6 +15,8 @@ use gpui_kit::component::button::{
     Button, ButtonCustomVariant, ButtonGroup, ButtonVariant, ButtonVariants as _,
 };
 use gpui_kit::component::dialog::DialogButtonProps;
+use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Root, Selectable as _,
     Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex, v_flex,
@@ -33,9 +35,25 @@ use gallows::gallows;
 pub const KEY_CONTEXT: &str = "Hangman";
 
 /// The size the window opens at when there is nothing saved to restore.
-pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1000.), px(760.));
+///
+/// The height is picked so the play column does not scroll in the state that
+/// needs the most room *of the ones that fit at all*: a finished word, where
+/// the result panel replaces the one-line status. That measures 771px with the
+/// shortcut bar in place, so this is that plus slack, because a wrapped alert
+/// line or the end-of-match footer would put an exact fit straight back into
+/// scrolling.
+///
+/// It is deliberately not a promise that nothing ever scrolls. The lifetime
+/// stats fold out inline under the result, and that state wants a window
+/// around 1110px tall — bigger than most laptops have — so the column has to
+/// stay scrollable whatever this says.
+pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1000.), px(800.));
 /// The smallest the window may be. Below this the toolbar wraps into the board
 /// and the stage column starts clipping the artwork.
+///
+/// This is a floor on what stays *usable*, not on what fits without
+/// scrolling — see [`DEFAULT_WINDOW_SIZE`] for why the two cannot be the same
+/// number.
 pub const MIN_WINDOW_SIZE: Size<Pixels> = size(px(880.), px(660.));
 
 // The original's alert strings, verbatim.
@@ -53,9 +71,15 @@ const IDLE_HINT: &str = "Type a letter, or click one above.";
 /// The price is in the tooltip rather than behind the click because it is a
 /// real one: a hint spends a wrong guess, which is a body part on the gallows
 /// and ten points off the word.
-const HINT_TOOLTIP: &str = "Reveal a letter — costs one wrong guess (Ctrl+H)";
-const HINT_TOOLTIP_LAST_GUESS: &str = "No hint: it would cost the last guess you have (Ctrl+H)";
-const HINT_TOOLTIP_OVER: &str = "No hint: this word is already finished (Ctrl+H)";
+///
+/// None of the three names its chord any more. Every toolbar button that has
+/// one is built with `tooltip_with_action`, which draws the binding the app
+/// actually registered as a `Kbd` chip beside the text — so the chord is read
+/// out of the keymap rather than typed twice, and it spells itself the way the
+/// platform does (`Ctrl+H` on Windows and Linux, `⌃H` on macOS).
+const HINT_TOOLTIP: &str = "Reveal a letter — costs one wrong guess";
+const HINT_TOOLTIP_LAST_GUESS: &str = "No hint: it would cost the last guess you have";
+const HINT_TOOLTIP_OVER: &str = "No hint: this word is already finished";
 
 /// The `Reset stats` confirmation, which is the one dialog in the window.
 ///
@@ -92,6 +116,26 @@ const BREAKDOWN_LABEL_WIDTH: Pixels = px(88.);
 
 /// The stage column's width: the 300px drawing plus its panel padding.
 const STAGE_WIDTH: Pixels = px(332.);
+
+/// The channel between the play column and the stage, matching the `p_5` that
+/// frames the board on its other three sides.
+///
+/// The play column does not get all of it. It reserves [`SCROLLBAR_GUTTER`] out
+/// of its own right edge and the flex gap is the remainder, so the two add back
+/// up to this and the board looks the same whether the scrollbar is there or
+/// not.
+const COLUMN_GAP: Pixels = px(20.);
+/// The strip kept clear down the right of the play column for its scrollbar.
+///
+/// gpui-kit paints the bar as an overlay across the scroll area rather than as
+/// a sibling that takes room, so without this it would sit on top of the right
+/// edge of the scoreboard and word panels. 16px is the bar's full track width
+/// (`gpui-base-0.6.0/src/scrollbar.rs:21`, `THUMB_ACTIVE_INSET * 2 +
+/// THUMB_ACTIVE_WIDTH`). The strip is reserved whether or not the column is
+/// currently overflowing: the alternative is measuring the content to decide,
+/// which means last frame's layout deciding this one's — and it would shift
+/// every panel sideways the moment a word ended.
+const SCROLLBAR_GUTTER: Pixels = px(16.);
 
 /// How wide one character of the word is, and how tall its glyph row is.
 const WORD_CELL_WIDTH: Pixels = px(34.);
@@ -395,6 +439,105 @@ fn dialog_is_open(window: &mut Window, cx: &mut App) -> bool {
 }
 
 actions!(hangman, [OpenWordList, ChangeWord, Hint]);
+
+// ------------------------------------------------------------ keyboard legend
+//
+// A tooltip only tells you about a shortcut once you already suspect there is
+// one — you have to hover the button to find out that you never needed the
+// button. So the shortcuts also live in a strip along the bottom of the
+// window, on screen the whole time, next to nothing else competing for the
+// row.
+
+/// One entry of the keyboard legend.
+///
+/// The three chords are the original's `Game` menu accelerators plus `Ctrl+H`,
+/// and they are the app's standing shortcuts: always listed, greyed when the
+/// key would currently do nothing, on the same reasoning that keeps the
+/// disabled `Hint` button on screen instead of hiding it. `NextWord` is the
+/// odd one out — it means something only once a word has ended — so it is
+/// listed only while it works rather than sitting greyed through every game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shortcut {
+    Hint,
+    ChangeWord,
+    OpenWordList,
+    NextWord,
+}
+
+impl Shortcut {
+    /// What the key does, in the fewest words that still say it.
+    fn label(self) -> &'static str {
+        match self {
+            Shortcut::Hint => "Reveal a letter",
+            Shortcut::ChangeWord => "Give up on this word",
+            Shortcut::OpenWordList => "Open a word list",
+            Shortcut::NextWord => "Next word",
+        }
+    }
+}
+
+/// A legend entry and whether pressing it right now would change anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShortcutHint {
+    shortcut: Shortcut,
+    /// `false` greys the entry: the key is real, but the game is in a state
+    /// that refuses it — the same three refusals the toolbar already models.
+    live: bool,
+}
+
+/// What the legend says about the game in hand.
+///
+/// Kept out of the render tree, and free of GPUI types, so the rule about
+/// which keys are offered when is a plain function a test can call — the view
+/// itself opens a window and cannot be.
+fn shortcut_legend(game: &Game) -> Vec<ShortcutHint> {
+    // The three that are always listed. `Game::give_up` refuses on a word that
+    // has already ended, and `Game::can_hint` refuses on the last guess and on
+    // a finished word; loading a list of your own is never refused.
+    let mut hints = vec![
+        ShortcutHint {
+            shortcut: Shortcut::Hint,
+            live: game.can_hint(),
+        },
+        ShortcutHint {
+            shortcut: Shortcut::ChangeWord,
+            live: !game.is_game_over(),
+        },
+        ShortcutHint {
+            shortcut: Shortcut::OpenWordList,
+            live: true,
+        },
+    ];
+    // Exactly the condition `Game::new_game` deals a word under, so the
+    // legend never offers Enter when the result panel is showing the match
+    // summary instead of a `New Game` button.
+    if game.is_game_over() && !game.is_match_over() {
+        hints.push(ShortcutHint {
+            shortcut: Shortcut::NextWord,
+            live: true,
+        });
+    }
+    hints
+}
+
+/// The chip for one legend entry, as the keymap currently spells it.
+///
+/// `None` means nothing is bound to that action, which is why the entry is
+/// dropped rather than drawn with a blank key.
+fn shortcut_kbd(shortcut: Shortcut, window: &Window) -> Option<Kbd> {
+    match shortcut {
+        Shortcut::Hint => Kbd::binding_for_action(&Hint, Some(KEY_CONTEXT), window),
+        Shortcut::ChangeWord => Kbd::binding_for_action(&ChangeWord, Some(KEY_CONTEXT), window),
+        Shortcut::OpenWordList => Kbd::binding_for_action(&OpenWordList, Some(KEY_CONTEXT), window),
+        // The one key here with no action behind it. Enter and Space are
+        // handled in `on_key_down` rather than bound, so that they keep
+        // activating whichever button has been tabbed to and only mean "next
+        // word" while the board itself holds focus — a `KeyBinding` would fire
+        // either way. There is therefore nothing in the keymap to read, and
+        // this is the only chord in the window still spelled out by hand.
+        Shortcut::NextWord => Keystroke::parse("enter").ok().map(Kbd::new),
+    }
+}
 
 /// A line of feedback, styled after the original's `alertMessage` label:
 /// italic, and green for good news or red for bad.
@@ -1102,7 +1245,7 @@ impl HangmanView {
                             .icon(IconName::Eye)
                             .label("Hint")
                             .disabled(!self.game.can_hint())
-                            .tooltip(self.hint_tooltip())
+                            .tooltip_with_action(self.hint_tooltip(), &Hint, Some(KEY_CONTEXT))
                             .on_click(cx.listener(|this, _, _, cx| this.hint(cx))),
                     )
                     .child(
@@ -1121,7 +1264,11 @@ impl HangmanView {
                             .ghost()
                             .icon(IconName::RotateCw)
                             .label("Change Word")
-                            .tooltip("Give up on this word (Ctrl+N) — counts as a loss")
+                            .tooltip_with_action(
+                                "Give up on this word — counts as a loss",
+                                &ChangeWord,
+                                Some(KEY_CONTEXT),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| this.give_up(cx))),
                     )
                     .child(
@@ -1130,7 +1277,11 @@ impl HangmanView {
                             .ghost()
                             .icon(IconName::FileText)
                             .label("Open word list…")
-                            .tooltip("Play a .txt of your own (Ctrl+O)")
+                            .tooltip_with_action(
+                                "Play a .txt of your own",
+                                &OpenWordList,
+                                Some(KEY_CONTEXT),
+                            )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_open_word_list(&OpenWordList, window, cx)
                             })),
@@ -1871,7 +2022,20 @@ impl HangmanView {
             .flex_1()
             .h_full()
             .gap_3()
-            .overflow_y_scroll()
+            // A real scrollbar rather than a bare `overflow_y_scroll`: this
+            // column is the only thing in the window that can scroll, and
+            // until it drew one there was nothing to say so — the content
+            // simply stopped at the bottom edge. gpui-kit hides the bar
+            // whenever the content fits, so it costs nothing in the states
+            // that need no scrolling.
+            //
+            // The padding is what keeps the bar out of the panels rather than
+            // over them. `Scrollable` copies only the size and flex styles onto
+            // its wrapper (`gpui-component-0.6.0/src/scroll/scrollable.rs:238`),
+            // so this stays on the scrolled content, and the overlay — which is
+            // pinned to the wrapper's edges — lands in the strip it leaves.
+            .pr(SCROLLBAR_GUTTER)
+            .overflow_y_scrollbar()
             .child(self.render_scoreboard(cx))
             .child(self.render_word_panel(cx))
             .child(self.render_keyboard(cx))
@@ -1883,6 +2047,56 @@ impl HangmanView {
             .when(self.show_stats, |this| {
                 this.child(self.render_stats_panel(cx))
             })
+    }
+
+    /// The keyboard legend along the bottom of the window.
+    ///
+    /// It sits outside the play column on purpose. That column scrolls, and a
+    /// legend that scrolls away is a legend you have to go looking for; this
+    /// is a strip under both columns, mirroring the toolbar at the top, so it
+    /// is on screen whatever the window is doing. It also keeps it clear of
+    /// the stage panel's flex arithmetic, which is more delicate than it looks
+    /// (see `render_stage`).
+    ///
+    /// Every chip is read out of the keymap through
+    /// [`Kbd::binding_for_action`], so this row cannot drift from the bindings
+    /// `main.rs` registers, and it spells each chord the way the platform
+    /// does.
+    fn render_shortcut_bar(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+
+        h_flex()
+            .w_full()
+            .flex_none()
+            .flex_wrap()
+            .gap_4()
+            .px_5()
+            .py_2()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .children(shortcut_legend(&self.game).into_iter().filter_map(|hint| {
+                // No binding in the keymap, no entry: an unlabelled promise is
+                // worse than nothing. Unreachable while `main.rs` binds all
+                // three, which is the point of asking rather than assuming.
+                let kbd = shortcut_kbd(hint.shortcut, window)?;
+                Some(
+                    h_flex()
+                        .items_center()
+                        .gap_1p5()
+                        // A key the game would currently refuse is dimmed
+                        // rather than dropped, so the strip stays the same
+                        // shape and the rule stays readable — the same call
+                        // the disabled `Hint` button makes.
+                        .opacity(if hint.live { 1. } else { 0.4 })
+                        .child(kbd.outline())
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(hint.shortcut.label()),
+                        ),
+                )
+            }))
     }
 }
 
@@ -1914,11 +2128,12 @@ impl Render for HangmanView {
                     .flex_1()
                     .min_h_0()
                     .items_stretch()
-                    .gap_5()
+                    .gap(COLUMN_GAP - SCROLLBAR_GUTTER)
                     .p_5()
                     .child(self.render_play_column(cx))
                     .child(self.render_stage(cx)),
             )
+            .child(self.render_shortcut_bar(window, cx))
             // `Root` owns these overlays but does not render them for you.
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
@@ -1930,7 +2145,10 @@ mod tests {
     // Named one by one rather than with a `use super::*`, which would drag in
     // this module's `gpui_kit::*` glob — and with it gpui's own `test` macro,
     // which shadows the built-in attribute and blows the recursion limit.
-    use super::{RESET_NOTHING, Stats, plural, points, reset_stats_summary};
+    use super::{
+        RESET_NOTHING, Shortcut, Stats, plural, points, reset_stats_summary, shortcut_legend,
+    };
+    use crate::game::{Difficulty, Game};
 
     // `Stats` has a private field, so it is filled in rather than built from a
     // literal — which is the right shape for this anyway: only the four
@@ -1988,5 +2206,119 @@ mod tests {
 
         assert_ne!(summary, RESET_NOTHING);
         assert!(summary.contains("best streak of 4"));
+    }
+
+    /// Everything in here goes through [`shortcut_legend`], which takes a
+    /// `&Game` and returns plain data — no GPUI type is constructed and no
+    /// window is opened, which is what keeps these runnable with the rest.
+    fn legend(game: &Game) -> Vec<(Shortcut, bool)> {
+        shortcut_legend(game)
+            .into_iter()
+            .map(|hint| (hint.shortcut, hint.live))
+            .collect()
+    }
+
+    /// Spend one guess on a letter the word does not contain.
+    fn guess_wrong(game: &mut Game) {
+        let wrong = ('A'..='Z')
+            .find(|letter| {
+                !game.word().contains(*letter) && !game.guessed_letters().contains(letter)
+            })
+            .expect("a word using all 26 letters would be a surprise");
+        game.guess(wrong);
+    }
+
+    /// Guess letters the word does not contain until the word is lost.
+    fn lose_the_word(game: &mut Game) {
+        while !game.is_game_over() {
+            guess_wrong(game);
+        }
+    }
+
+    /// Play the whole list out, losing every word, until the match is scored.
+    fn lose_the_match(game: &mut Game) {
+        while !game.is_match_over() {
+            lose_the_word(game);
+            game.new_game();
+        }
+    }
+
+    #[test]
+    fn a_word_in_play_offers_the_three_standing_shortcuts() {
+        let game = Game::with_seed(Difficulty::Easy, 7);
+
+        assert_eq!(
+            legend(&game),
+            vec![
+                (Shortcut::Hint, true),
+                (Shortcut::ChangeWord, true),
+                (Shortcut::OpenWordList, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_hint_entry_greys_out_on_the_last_guess_rather_than_vanishing() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        while game.remaining_guesses() > 1 {
+            guess_wrong(&mut game);
+        }
+
+        assert!(
+            !game.can_hint(),
+            "the last guess is not spendable on a hint"
+        );
+        assert_eq!(
+            legend(&game),
+            vec![
+                (Shortcut::Hint, false),
+                (Shortcut::ChangeWord, true),
+                (Shortcut::OpenWordList, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_finished_word_offers_enter_and_dims_what_it_refuses() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        lose_the_word(&mut game);
+
+        assert!(!game.is_match_over(), "one lost word is not a whole match");
+        assert_eq!(
+            legend(&game),
+            vec![
+                (Shortcut::Hint, false),
+                (Shortcut::ChangeWord, false),
+                (Shortcut::OpenWordList, true),
+                (Shortcut::NextWord, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_finished_match_stops_offering_enter() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        lose_the_match(&mut game);
+
+        // `Game::new_game` refuses once the list is exhausted, and the result
+        // panel swaps its `New Game` button for the match summary — so a
+        // legend still promising Enter would be promising nothing.
+        assert!(!game.new_game());
+        assert!(
+            !legend(&game)
+                .iter()
+                .any(|(shortcut, _)| *shortcut == Shortcut::NextWord)
+        );
+    }
+
+    #[test]
+    fn loading_your_own_list_is_never_refused() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        lose_the_match(&mut game);
+
+        assert!(
+            legend(&game).contains(&(Shortcut::OpenWordList, true)),
+            "Ctrl+O works in every state the game can be in"
+        );
     }
 }
