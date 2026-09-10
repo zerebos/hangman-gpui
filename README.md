@@ -413,8 +413,13 @@ the order they were argued about rather than in any committed order.
     question. The component came out well: it takes both themes from
     `cx.theme()` with nothing hard-coded, Escape cancels and Enter confirms
     with no bindings of our own, Tab cycles inside the dialog rather than
-    escaping to the board, and the backdrop blocks the mouse. Two things are
-    worth knowing before the next one. `Root` does not paint the dialog layer
+    escaping to the board, and the backdrop blocks the mouse. Its *dim* was
+    the one thing worth overriding: gpui-kit's `overlay` token is black at 5%
+    in light and 20% in dark, which reads as slightly greyed rather than
+    modal, so the game sets 35% and 50% instead — and note which way round
+    those go, because a black wash over an already-dark board has less left to
+    darken than one over a white board. Two more things are worth knowing
+    before the next dialog. `Root` does not paint the dialog layer
     for you — the view has to render `Root::render_dialog_layer`, which this
     one already did for notifications — and that layer sits *inside* the
     window's key context, so a key pressed at a dialog still reaches the

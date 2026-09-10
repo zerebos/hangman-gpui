@@ -1,11 +1,12 @@
 //! Hangman — a Rust + GPUI port of Zack Rauen's 2015 Java hangman.
 
-use gpui_kit::component::{Root, Theme, TitleBar};
+use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::*;
 
 use hangman_gpui::settings::Settings;
 use hangman_gpui::ui::{
-    ChangeWord, HangmanView, Hint, KEY_CONTEXT, MIN_WINDOW_SIZE, OpenWordList, window_bounds,
+    ChangeWord, HangmanView, Hint, KEY_CONTEXT, MIN_WINDOW_SIZE, OpenWordList, apply_theme,
+    window_bounds,
 };
 
 fn main() {
@@ -23,10 +24,13 @@ fn main() {
 
         // `gpui_kit::init` installs the light palette, so the saved choice has
         // to be applied after it, not before. `Theme` is a GPUI global, so this
-        // one call restyles every component. Swap it for
+        // one call restyles every component. `apply_theme` rather than
+        // `Theme::change` because the game overrides one token — the dialog
+        // backdrop — and every theme change has to put it back; see
+        // `ui::apply_theme`. Swap the mode for
         // `Theme::sync_system_appearance(None, cx)` to follow the desktop
         // instead — the in-window toggle overrides either way.
-        Theme::change(settings.theme, None, cx);
+        apply_theme(settings.theme, None, cx);
 
         // The original's Game menu accelerators, minus the menu bar.
         cx.bind_keys([

@@ -153,14 +153,25 @@ the title bar eating the event. Real bug in this repo, fixed in commit
 
 `gpui_component::init` calls `theme::init`, which does
 `Theme::change(ThemeMode::Light, None, cx)`
-(`gpui-component-0.6.0/src/theme/mod.rs:35`). This game is dark-first, so
-`main.rs` calls `Theme::change(settings.theme, None, cx)` **after**
-`gpui_kit::init(cx)` — where `settings.theme` is the saved choice and defaults
-to `ThemeMode::Dark`. Order matters.
+(`gpui-component-0.6.0/src/theme/mod.rs:35`). This game is dark-first, so the
+saved choice has to be applied **after** `gpui_kit::init(cx)`, not before —
+`settings.theme` defaults to `ThemeMode::Dark`. Order matters.
 
-`Theme` is a GPUI global, so one call restyles every component. Pass
-`Some(window)` from a click handler — `Theme::change` calls `window.refresh()`
-itself (`theme/mod.rs:261-262`), so you don't need to.
+`Theme` is a GPUI global, so one call restyles every component. `Theme::change`
+calls `window.refresh()` itself when you pass it `Some(window)`
+(`theme/mod.rs:261-262`), so you don't normally need to.
+
+**Nothing may call `Theme::change` directly any more.** `ui::apply_theme` is
+the only entry point, and both `main.rs` at startup and the title-bar toggle go
+through it. The reason is that this game overrides exactly one theme token —
+the dialog backdrop, see gotcha 10 — and `Theme::change` rebuilds the entire
+colour set from the theme config (`theme/mod.rs:245-255`), so an override
+written once at startup is silently reverted by the first press of the toggle.
+The symptom of getting this wrong is a dialog that dims correctly until you
+change theme and never again, which reads as a dialog bug rather than a theme
+one. `apply_theme` therefore passes `None` to `Theme::change` and calls
+`window.refresh()` itself, after the override is back in — refreshing first
+would paint the frame with the token that was just reset.
 
 ### 3. Don't trust gpui-kit docs/examples over the compiler
 
@@ -330,7 +341,18 @@ error names neither gpui nor the glob and its suggestion — raise
 need by name instead. `game.rs` and friends never hit this because they import
 no gpui.
 
-**One thing to judge by eye rather than by code:** the backdrop dim is
-`cx.theme().overlay`, and it is subtle — measured off a headless capture it
-takes the board from 22 to 18 in dark and 250 to 237 in light. It reads as
-"slightly greyed", not "modal".
+**The backdrop dim is a theme token, and gpui-kit's default is too weak for
+this window.** It is `cx.theme().overlay`, which `default-theme.json` sets to
+black at **5%** in light and **20%** in dark, and there is no per-dialog knob
+for it — `Dialog::overlay(bool)` is on or off and nothing else. The dark
+default is the instructive one: four times the alpha of the light default, and
+it lands *softer*, because a black wash over a board that is already near-black
+has almost nothing left to darken. Measured off headless captures the stock
+tokens moved the board from 22 to 18 in dark and 250 to 237 in light — a dialog
+that reads as "slightly greyed", not "modal".
+
+`OVERLAY_DIM_LIGHT` / `OVERLAY_DIM_DARK` in `src/ui/mod.rs` override it to 35%
+and 50%, which measure 250 → 163 and 22 → 11. Note that the two numbers are not
+a pair: light is *lower* and dims *more*, because white has further to fall.
+The override is applied in `apply_theme` and gotcha 2 is why it has to live
+there rather than at startup.

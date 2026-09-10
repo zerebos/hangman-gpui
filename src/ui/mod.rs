@@ -126,6 +126,51 @@ impl From<ThemeMode> for ThemeChoice {
     }
 }
 
+/// How far the dialog backdrop dims the board, per theme.
+///
+/// gpui-kit's own token is black at 5% in light and 20% in dark
+/// (`gpui-component-0.6.0/src/theme/default-theme.json`), and both are too
+/// weak to read as a modal here. The dark one is the instructive case: it is
+/// four times the alpha of the light one and lands *softer*, because it is a
+/// black wash over a board that is already near-black and there is almost
+/// nothing left to darken. So the two numbers are not one number and its
+/// counterpart — light needs less because white has further to fall.
+const OVERLAY_DIM_LIGHT: f32 = 0.35;
+const OVERLAY_DIM_DARK: f32 = 0.5;
+
+/// Set the theme, and re-apply the one token this game overrides.
+///
+/// **Both callers must come through here**, `main.rs` at startup as much as
+/// the toggle in the title bar. `Theme::change` rebuilds the whole colour set
+/// from the theme config (`theme/mod.rs:245-255`), so an overlay written once
+/// at startup is silently reverted by the first press of the toggle: the
+/// dialog would dim properly until you changed theme, and never again.
+pub fn apply_theme(mode: impl Into<ThemeMode>, window: Option<&mut Window>, cx: &mut App) {
+    let mode = mode.into();
+
+    // `None`, not `window`: `Theme::change` refreshes at the end, which would
+    // repaint with the token it has just reset. The refresh is done below,
+    // once the override is back in.
+    Theme::change(mode, None, cx);
+
+    let dim = if mode.is_dark() {
+        OVERLAY_DIM_DARK
+    } else {
+        OVERLAY_DIM_LIGHT
+    };
+    Theme::global_mut(cx).colors.overlay = hsla(0., 0., 0., dim);
+    // The Base layer holds its own copy of the tokens and a field written
+    // straight onto `Theme` does not reach it. `overlay` is read by
+    // gpui-component rather than Base, so this is not load-bearing today — it
+    // is the documented contract for `global_mut`, and the next token someone
+    // overrides here may well need it.
+    Theme::sync_base(cx);
+
+    if let Some(window) = window {
+        window.refresh();
+    }
+}
+
 /// Where to open the window: where the last run left it, if that still lands on
 /// a display that exists, and the centred default otherwise.
 ///
@@ -759,7 +804,7 @@ impl HangmanView {
         } else {
             ThemeMode::Dark
         };
-        Theme::change(next, Some(window), cx);
+        apply_theme(next, Some(window), cx);
         self.settings.theme = next.into();
         self.settings.save();
         cx.notify();
