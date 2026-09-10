@@ -100,6 +100,26 @@ const BREAKDOWN_LABEL_WIDTH: Pixels = px(88.);
 /// The stage column's width: the 300px drawing plus its panel padding.
 const STAGE_WIDTH: Pixels = px(332.);
 
+/// The channel between the play column and the stage, matching the `p_5` that
+/// frames the board on its other three sides.
+///
+/// The play column does not get all of it. It reserves [`SCROLLBAR_GUTTER`] out
+/// of its own right edge and the flex gap is the remainder, so the two add back
+/// up to this and the board looks the same whether the scrollbar is there or
+/// not.
+const COLUMN_GAP: Pixels = px(20.);
+/// The strip kept clear down the right of the play column for its scrollbar.
+///
+/// gpui-kit paints the bar as an overlay across the scroll area rather than as
+/// a sibling that takes room, so without this it would sit on top of the right
+/// edge of the scoreboard and word panels. 16px is the bar's full track width
+/// (`gpui-base-0.6.0/src/scrollbar.rs:21`, `THUMB_ACTIVE_INSET * 2 +
+/// THUMB_ACTIVE_WIDTH`). The strip is reserved whether or not the column is
+/// currently overflowing: the alternative is measuring the content to decide,
+/// which means last frame's layout deciding this one's — and it would shift
+/// every panel sideways the moment a word ended.
+const SCROLLBAR_GUTTER: Pixels = px(16.);
+
 /// How wide one character of the word is, and how tall its glyph row is.
 const WORD_CELL_WIDTH: Pixels = px(34.);
 const WORD_CELL_HEIGHT: Pixels = px(38.);
@@ -1844,6 +1864,13 @@ impl HangmanView {
             // simply stopped at the bottom edge. gpui-kit hides the bar
             // whenever the content fits, so it costs nothing in the states
             // that need no scrolling.
+            //
+            // The padding is what keeps the bar out of the panels rather than
+            // over them. `Scrollable` copies only the size and flex styles onto
+            // its wrapper (`gpui-component-0.6.0/src/scroll/scrollable.rs:238`),
+            // so this stays on the scrolled content, and the overlay — which is
+            // pinned to the wrapper's edges — lands in the strip it leaves.
+            .pr(SCROLLBAR_GUTTER)
             .overflow_y_scrollbar()
             .child(self.render_scoreboard(cx))
             .child(self.render_word_panel(cx))
@@ -1937,7 +1964,7 @@ impl Render for HangmanView {
                     .flex_1()
                     .min_h_0()
                     .items_stretch()
-                    .gap_5()
+                    .gap(COLUMN_GAP - SCROLLBAR_GUTTER)
                     .p_5()
                     .child(self.render_play_column(cx))
                     .child(self.render_stage(cx)),
