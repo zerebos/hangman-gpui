@@ -31,7 +31,8 @@ engine (with 54 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (28 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 142 tests, and
+(35 more), and [`src/ui/`](src/ui/) is everything GPUI — plus the six tests its
+prose helpers have grown. That is 148 tests, and
 `cargo test` runs the lot in well under a second. The word lists and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -190,6 +191,8 @@ word list. The streak deliberately does neither, which is the point of it.
 | Abandon the word you are on (counts as a loss) | Changing difficulty or loading a word list mid-word |
 | Replay the difficulty you just finished | The button already selected, once the match is over |
 | Show the lifetime stats | The `Stats` button in the toolbar |
+| Throw the lifetime stats away | `Reset stats`, inside the stats panel — it asks first |
+| Answer that question | `Reset` / `Keep them`, or Enter / Escape |
 | Quit | Close the window |
 
 A word list is a plain `.txt` file with one word per line. Lines are trimmed and
@@ -286,7 +289,10 @@ here that survives everything: it carries across the end of a match, across a
 difficulty change, across loading a new word list and across quitting the game.
 Only failing a word puts it back to zero — and `Change Word` is failing a word.
 The **best streak** is the high-water mark, and nothing but the `Reset stats`
-button lowers it.
+button lowers it — and that button asks before it does, naming the points, the
+words and the best streak you are about to lose. It is the only thing in the
+game that stops to ask, because it is the only thing you cannot play your way
+back out of.
 
 `SCORE` on the scoreboard is what the *match* on screen has earned so far; it
 starts again at zero when you pick a difficulty or load a word list, and is
@@ -399,16 +405,27 @@ the order they were argued about rather than in any committed order.
    unblocked item 4. The trade-off was real: it retired the bundled artwork.
 7. **Keyboard hints.** Surface the shortcuts in the window itself with gpui-kit's
    `Kbd` and `Tooltip::action`.
-10. **Try gpui-kit's `Modal` and `Dialog`.** The window has never used either —
-    the stats panel folds out inline and the warning before you abandon a word
-    is a tooltip, both because an unproven component API is the trap the project
-    notes warn about, not because a dialog would be wrong. Build one somewhere
-    small and see how it behaves: whether it takes the theme, whether Escape and
-    a click outside dismiss it, whether it traps focus, and how it reads on
-    Windows. If it comes out well there is more than one place for it — a
-    confirm before a difficulty switch costs you a word, a confirm before
-    `Reset stats` throws the lifetime tally away, and the end-of-match summary
-    are all currently shaped around not having one.
+10. **Try gpui-kit's `Modal` and `Dialog`** *(done).* `Reset stats` was the
+    proving ground: destructive, self-contained, and the one button in the
+    window that cannot be played back out of. It now opens gpui-kit's
+    `AlertDialog` — the opinionated wrapper over `Dialog` — with the points,
+    the words and the best streak it is about to throw away written into the
+    question. The component came out well: it takes both themes from
+    `cx.theme()` with nothing hard-coded, Escape cancels and Enter confirms
+    with no bindings of our own, Tab cycles inside the dialog rather than
+    escaping to the board, and the backdrop blocks the mouse. Two things are
+    worth knowing before the next one. `Root` does not paint the dialog layer
+    for you — the view has to render `Root::render_dialog_layer`, which this
+    one already did for notifications — and that layer sits *inside* the
+    window's key context, so a key pressed at a dialog still reaches the
+    board's `on_key_down` unless it is guarded; without the guard a letter
+    typed at the confirmation is guessed behind it. Of the two remaining
+    candidates the same component fits the difficulty-switch warning almost
+    exactly, since it is the same shape of question with a word rather than a
+    tally at stake; the end-of-match summary is the doubtful one, because it
+    is news rather than a question and interrupting a player who just won to
+    make them dismiss a box is a worse read than the footer line they have
+    now.
 
 ### Craft
 
@@ -418,7 +435,8 @@ the order they were argued about rather than in any committed order.
    stats to the same file; the match's own score is still the one thing that is
    not kept, because it belongs to the match and dies with it.
 9. **Make the UI testable.** Pull the pure helpers out of
-   [`src/ui/mod.rs`](src/ui/mod.rs) — which has no tests at all — and cover them.
+   [`src/ui/mod.rs`](src/ui/mod.rs) — which has only the handful of tests item
+   10 brought with it — and cover them.
 11. **Resume the word you were on.** Closing the window mid-word is the last
     silent way out of a word you are losing: the settings file keeps the theme,
     the window, the difficulty and the lifetime stats, and nothing at all about

@@ -41,8 +41,12 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 142 tests and finishes in under a second — every one of them is
+`cargo test` is 148 tests and finishes in under a second — every one of them is
 in-file in a module with no GPUI types in it, so nothing there opens a window.
+That holds even for the six in `src/ui/mod.rs`: they cover its prose helpers
+(`plural`, `points`, `reset_stats_summary`), which take plain data and return a
+`String`, and the test module imports them by name rather than with a
+`use super::*` — see gotcha 10 for why that matters.
 
 ## Layout
 
@@ -278,3 +282,55 @@ was handed; the box was wrong one level up.
 The fix is `.w_full()` on the column, `flex_1` instead of a fixed height on the
 drawing so it takes the column's slack, and `flex_none` on the pip row so it
 keeps its own. Real bug in this repo, fixed in commit `315e8ef`.
+
+### 10. A dialog needs a layer rendered, a guard on the keyboard, and no `use super::*` in its tests
+
+`Reset stats` is the window's one gpui-kit dialog (`confirm_reset_stats` in
+`src/ui/mod.rs`), and it took four surprises to get there. The component itself
+is good: `AlertDialog` takes both themes from `cx.theme()` with nothing
+hard-coded, traps Tab, blocks the mouse behind it, and gets Escape and Enter
+for free — `gpui_kit::init` reaches `gpui_base::dialog::init`, which binds
+`escape` to `Cancel` and `enter` to `Confirm` in a `Dialog` key context
+(`gpui-base-0.6.0/src/dialog.rs:89-91`). The surprises are around it.
+
+**`Root` does not paint the dialog layer.** `impl Render for Root` renders the
+view, the tooltip overlay and the native-menu overlay, and nothing else
+(`gpui-component-0.6.0/src/root.rs:577`). `window.open_dialog` pushes onto
+`Root::active_dialogs` and stops there, so a window whose view never renders
+`Root::render_dialog_layer(window, cx)` opens dialogs that are invisible and
+un-dismissable — indistinguishable from a dialog that never opened. This view
+already renders it, next to `render_notification_layer`; keep both.
+
+**That layer is a child of this view**, so it is *inside* `key_context(KEY_CONTEXT)`
+and under the `on_key_down` that guesses letters. Keys pressed at a dialog
+bubble all the way up to it: without a guard, typing `A` at the confirmation
+guesses A on the board behind, and `Ctrl+H` spends a wrong guess the player
+cannot see happen. `dialog_is_open` (`window.has_active_dialog(cx)`) is that
+guard and every key path calls it first. Escape and Enter are the exception
+and need no guard — they are dispatched from the dialog's own key context,
+which is nearer the focus.
+
+**`AlertDialog` is the confirm-shaped one, `Dialog` the general one.** Alert
+defaults to no ✕ and refuses backdrop dismissal outright — its
+`overlay_closable` is `#[deprecated]` to a no-op rather than merely defaulted
+off (`dialog/alert_dialog.rs`) — which is what a destructive confirm wants.
+`Dialog` closes on a backdrop click by default. Both `on_ok` and `on_cancel`
+return a `bool` saying whether to close, so a dialog can refuse to go. Neither
+is a `cx.listener`: they are plain `Fn(&ClickEvent, &mut Window, &mut App)`,
+so reaching the view means a `WeakEntity`. The builder passed to
+`open_alert_dialog` is an `Fn` re-run every frame the dialog is on screen, so
+everything it captures must be cloned inside, not moved.
+
+**`#[test]` does not compile in a module that does `use super::*` here.**
+`src/ui/mod.rs` has `use gpui_kit::*`, which re-exports gpui's own `test`
+attribute macro; a glob beats the prelude, so `#[test]` resolves to that one
+and rustc dies with `recursion limit reached while expanding #[test]`. The
+error names neither gpui nor the glob and its suggestion — raise
+`recursion_limit` — is a blind alley. Import the handful of items the tests
+need by name instead. `game.rs` and friends never hit this because they import
+no gpui.
+
+**One thing to judge by eye rather than by code:** the backdrop dim is
+`cx.theme().overlay`, and it is subtle — measured off a headless capture it
+takes the board from 22 to 18 in dark and 250 to 237 in light. It reads as
+"slightly greyed", not "modal".
