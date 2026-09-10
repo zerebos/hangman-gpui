@@ -31,7 +31,7 @@ engine (with 54 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (28 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 142 tests, and
+(35 more), and [`src/ui/`](src/ui/) is everything GPUI. That is 147 tests, and
 `cargo test` runs the lot in well under a second. The word lists and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -130,7 +130,7 @@ usual place for your platform:
       "x": 460.0,
       "y": 160.0,
       "width": 1000.0,
-      "height": 760.0
+      "height": 800.0
     },
     "maximized": false
   },
@@ -166,7 +166,8 @@ played from a word list of your own count in the totals and the streak but in
 none of the four buckets, because they belong to no difficulty.
 
 Nothing in there is required: delete the file, edit it by hand, or leave it on a
-read-only disk, and the game falls back to its defaults — dark, centred, Easy —
+read-only disk, and the game falls back to its defaults — dark, centred at
+1000 × 800, Easy —
 saying so on stderr at worst. A saved window that no longer fits the monitors
 you have is resized and moved back on screen rather than trusted, so unplugging
 a second monitor can never strand the window somewhere you cannot reach it.
@@ -191,6 +192,14 @@ word list. The streak deliberately does neither, which is the point of it.
 | Replay the difficulty you just finished | The button already selected, once the match is over |
 | Show the lifetime stats | The `Stats` button in the toolbar |
 | Quit | Close the window |
+
+Nothing in that table has to be memorised: the strip along the bottom of the
+window lists the shortcuts as you play, dimming the ones the game would refuse
+right now — `Ctrl+H` once a hint would cost your last guess, `Ctrl+N` once the
+word has ended — and showing `Enter` only while there is a next word to deal.
+The same key is drawn beside the matching toolbar button's tooltip. Both are
+read from the bindings themselves, so on macOS they read `⌃H` rather than
+`Ctrl+H`.
 
 A word list is a plain `.txt` file with one word per line. Lines are trimmed and
 upper-cased, and lines with no letters in them are dropped.
@@ -397,8 +406,15 @@ the order they were argued about rather than in any committed order.
    scales to whatever room it is given, takes all three of its colours from the
    theme, and spreads its body parts over any guess budget — which is what
    unblocked item 4. The trade-off was real: it retired the bundled artwork.
-7. **Keyboard hints.** Surface the shortcuts in the window itself with gpui-kit's
-   `Kbd` and `Tooltip::action`.
+7. **Keyboard hints** *(done).* The shortcuts are on screen instead of being
+   folklore. A strip along the bottom of the window lists each one as a
+   `Kbd` chip beside what it does, greying the ones the game would currently
+   refuse and adding `Enter` only while there is a next word to deal, and the
+   toolbar's tooltips carry the same chip through `tooltip_with_action`
+   instead of the chord being typed into the sentence. Both read the binding
+   out of the keymap `main.rs` registers rather than repeating it, so they
+   cannot drift from it and each chord spells itself the way the platform does
+   — `Ctrl+H` here, `⌃H` on macOS. See [Controls](#controls).
 10. **Try gpui-kit's `Modal` and `Dialog`.** The window has never used either —
     the stats panel folds out inline and the warning before you abandon a word
     is a tooltip, both because an unproven component API is the trap the project
@@ -418,7 +434,11 @@ the order they were argued about rather than in any committed order.
    stats to the same file; the match's own score is still the one thing that is
    not kept, because it belongs to the match and dies with it.
 9. **Make the UI testable.** Pull the pure helpers out of
-   [`src/ui/mod.rs`](src/ui/mod.rs) — which has no tests at all — and cover them.
+   [`src/ui/mod.rs`](src/ui/mod.rs) and cover them. Item 7 opened the file's
+   first test module by keeping its own rule — which shortcuts the legend
+   offers, and which of them are live — in a plain function over a `&Game`;
+   the four `&self` helpers next to it (`match_summary`, `subtitle`,
+   `guess_count`, `key_state`) are the rest of the job.
 11. **Resume the word you were on.** Closing the window mid-word is the last
     silent way out of a word you are losing: the settings file keeps the theme,
     the window, the difficulty and the lifetime stats, and nothing at all about
