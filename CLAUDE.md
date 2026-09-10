@@ -41,12 +41,12 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 133 tests and finishes in under a second — every one of them is
+`cargo test` is 142 tests and finishes in under a second — every one of them is
 in-file in a module with no GPUI types in it, so nothing there opens a window.
 
 ## Layout
 
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 45 unit
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 54 unit
   tests in-file. Keep it that way; UI work should not need to touch it. Its
   `words_won`/`words_lost` are *per-match* counters that exist only so
   `finish_match` can derive a `MatchOutcome`; they reset with the match, and
@@ -58,7 +58,23 @@ in-file in a module with no GPUI types in it, so nothing there opens a window.
   falling as `Difficulty::weight` climbs or playing up stops paying. Both are
   guarded by tests (`every_budget_buys_exactly_one_body_part_per_wrong_guess`
   here, `a_clean_win_pays_more_the_harder_the_list` in `stats.rs`) — read those
-  before retuning either table. `hint` spends that budget: it reveals a letter
+  before retuning either table. `set_difficulty` returns a `bool` for the same
+  reason `new_game` does: it refuses, and changes nothing, when the difficulty
+  asked for is the one already in play *and* the match is still running, so a
+  stray click on the selected pill cannot cost the word in hand. Once the match
+  is over that click is the only way to replay the list, so it restarts as
+  normal — don't collapse the two cases into one. The predicate behind that
+  `false` is `would_switch_to`, public because the view has to ask *before* it
+  acts: a switch throws the current word away, and `has_word_to_lose` decides
+  whether that word has to be paid for. Those two are the whole abandon rule —
+  a word with a guess or a hint on it, walked away from by a difficulty switch
+  or a new word list, is charged as a loss by the *view* (`record_abandoned`),
+  because `game.rs` is being reset out from under it and has no stats to keep.
+  Read both before touching either call site: the loss belongs to the
+  difficulty the word came from, so the word and its difficulty have to be
+  captured before the reset, and `load_word_list` must charge only on its
+  success branch, since a list that will not parse leaves the word alone.
+  `hint` spends that budget: it reveals a letter
   drawn from the game's own `rng` (so a seeded game hints reproducibly) and
   charges one wrong guess, which is why hints needed no scoring change — a
   spent guess is already worth ten points through `remaining_guesses`. It

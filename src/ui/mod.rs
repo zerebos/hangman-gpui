@@ -583,12 +583,54 @@ impl HangmanView {
         }
     }
 
+    /// The word that is about to be thrown away, if throwing it away costs
+    /// anything: its text, and the difficulty it belongs to.
+    ///
+    /// Both have to be read *before* the throw, because dealing a new pool
+    /// takes the word with it and may change the difficulty out from under the
+    /// loss — which belongs to the list the word came from, not the one being
+    /// switched to.
+    fn word_being_abandoned(&self) -> Option<(String, Option<Difficulty>)> {
+        self.game
+            .has_word_to_lose()
+            .then(|| (self.game.word().to_string(), self.game.difficulty()))
+    }
+
+    /// Charge a loss for a word walked away from, and say so.
+    ///
+    /// This is [`HangmanView::record`] for the abandon case, with `difficulty`
+    /// passed in rather than read back off the game for the reason above. The
+    /// other two arguments `record` reads are not needed: an abandoned word is
+    /// lost, a lost word is worth no points, so the unspent budget never enters
+    /// the arithmetic, and the match is being discarded rather than finished so
+    /// there is no `MatchOutcome` to record.
+    fn record_abandoned(&mut self, word: &str, difficulty: Option<Difficulty>) -> Notice {
+        self.session.record_word(difficulty, GameResult::Lost, 0);
+        self.settings.stats = self.session.stats().clone();
+        self.settings.save();
+        Notice::bad(format!("Leaving {word} counts as a loss in my book."))
+    }
+
     fn set_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
+        // The pills are a `ButtonGroup`, so the selected one is still a button
+        // and clicking it still fires. Ask first, because a click that changes
+        // nothing must not cost the word in hand — and because the answer is
+        // what decides whether there is a word to charge for at all. Once the
+        // match is over the same click does restart, which is the footer's
+        // "pick a difficulty to start a new match".
+        if !self.game.would_switch_to(difficulty) {
+            return;
+        }
+        // Read before the switch deals a new pool and takes the word with it.
+        let abandoned = self.word_being_abandoned();
+
         self.game.set_difficulty(difficulty);
         // A fresh match, so the match score starts again from zero. The streak
         // and the lifetime tally are untouched on purpose — see `crate::stats`.
         self.session.start_match();
-        self.notice = None;
+        // Walking out on a half-played word is losing it, exactly as giving up
+        // is: without this the streak keeps a free escape hatch.
+        self.notice = abandoned.map(|(word, from)| self.record_abandoned(&word, from));
         self.last_guess = None;
         self.settings.difficulty = Some(difficulty);
         self.settings.save();
@@ -657,6 +699,11 @@ impl HangmanView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Read before the load, for the same reason as in `set_difficulty` —
+        // and only charged for on the success branch below, because a list that
+        // turns out to be unreadable or empty leaves the current word alone.
+        let abandoned = self.word_being_abandoned();
+
         let loaded = contents.ok().and_then(|text| {
             let words = text.lines().map(str::to_owned).collect();
             self.game.set_word_list(words).ok()
@@ -665,9 +712,11 @@ impl HangmanView {
         match loaded {
             Some(()) => {
                 // A loaded list starts a fresh match, exactly as picking a
-                // difficulty does, so the match score restarts with it.
+                // difficulty does, so the match score restarts with it — and,
+                // exactly as picking a difficulty does, it loses you the word
+                // you walked out on.
                 self.session.start_match();
-                self.notice = None;
+                self.notice = abandoned.map(|(word, from)| self.record_abandoned(&word, from));
                 self.last_guess = None;
                 window.push_notification(
                     format!("Loaded {} words. New match!", self.game.total_words()),
@@ -828,6 +877,16 @@ impl HangmanView {
 
     fn render_toolbar(&self, cx: &Context<Self>) -> impl IntoElement {
         let current = self.game.difficulty();
+        // What switching away would cost right now, or `None` when it is free.
+        // The warning goes on the pills themselves rather than into a dialog:
+        // gpui-kit ships a `Modal` and a `Dialog`, but this window has never
+        // used either (see `render_stats_panel`), and a tooltip is the idiom
+        // every other button in this toolbar already uses. You hover before you
+        // click, and the notice after the switch says it a second time.
+        // It says "this word" and never the word itself, unlike the notice
+        // afterwards: a tooltip is readable *during* play, and `game.word()` is
+        // the answer.
+        let at_stake = self.game.has_word_to_lose();
 
         h_flex()
             .w_full()
@@ -846,9 +905,19 @@ impl HangmanView {
                         .small()
                         .outline()
                         .children(Difficulty::ALL.map(|difficulty| {
-                            Button::new(SharedString::from(format!("difficulty-{difficulty:?}")))
-                                .label(difficulty.label())
-                                .selected(current == Some(difficulty))
+                            let selected = current == Some(difficulty);
+                            let pill = Button::new(SharedString::from(format!(
+                                "difficulty-{difficulty:?}"
+                            )))
+                            .label(difficulty.label())
+                            .selected(selected);
+                            // Only the pills that would actually switch, and
+                            // only while there is a word to lose.
+                            if at_stake && !selected {
+                                pill.tooltip("Switching now counts this word as a loss")
+                            } else {
+                                pill
+                            }
                         }))
                         .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
                             if let Some(difficulty) =
