@@ -357,7 +357,7 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. These are the eleven ideas agreed for where it goes next, roughly in
+mirroring it. These are the twelve ideas agreed for where it goes next, roughly in
 the order they were argued about rather than in any committed order.
 
 ### Game and rules
@@ -432,9 +432,13 @@ the order they were argued about rather than in any committed order.
     escaping to the board, and the backdrop blocks the mouse. Its *dim* was
     the one thing worth overriding: gpui-kit's `overlay` token is black at 5%
     in light and 20% in dark, which reads as slightly greyed rather than
-    modal, so the game sets 35% and 50% instead — and note which way round
+    modal, so the game sets 45% and 60% instead — and note which way round
     those go, because a black wash over an already-dark board has less left to
-    darken than one over a white board. Two more things are worth knowing
+    darken than one over a white board. Its *placement* was the other: gpui-kit
+    pins a dialog a tenth of the way down the window, which reads as hung off
+    the top edge, and the position itself cannot be styled — the box is
+    positioned `relative`, though, so a top margin moves it, and the game uses
+    one to put the top edge three tenths down instead. Two more things are worth knowing
     before the next dialog. `Root` does not paint the dialog layer
     for you — the view has to render `Root::render_dialog_layer`, which this
     one already did for notifications — and that layer sits *inside* the
@@ -446,7 +450,7 @@ the order they were argued about rather than in any committed order.
     tally at stake; the end-of-match summary is the doubtful one, because it
     is news rather than a question and interrupting a player who just won to
     make them dismiss a box is a worse read than the footer line they have
-    now.
+    now. Which of the rest are worth a dialog is item 12.
 
 ### Craft
 
@@ -475,6 +479,28 @@ the order they were argued about rather than in any committed order.
     a [`Game`](src/game.rs) from one, both under the existing rule that a
     malformed value falls back rather than failing loudly. It is worth having on
     its own account as much as for the hole it closes.
+12. **Decide which other moments deserve a dialog.** Item 10 answered whether
+    gpui-kit's dialogs are worth using; it did not answer where else to put
+    one, and the answer is not "everywhere destructive" — a game that stops to
+    ask four times an hour is worse than one that never asks. Four moments are
+    on the table, and they are not the same kind of moment.
+    Switching difficulty with a part-played word on the board is the closest
+    match to `Reset stats`: it charges a loss and ends the streak, and today it
+    is a tooltip you have to hover to read plus a notice afterwards telling you
+    what it already cost. Opening a word list does exactly the same thing for
+    exactly the same price, and has no warning at all — the file picker is the
+    only thing between the click and the loss, and it is not telling you the
+    word is at stake. `Change Word` is the doubtful one of the three: it is the
+    same loss, but the button says `Give up on this word` and the shortcut
+    strip repeats it, so the intent is already stated and a confirm risks being
+    the nag that teaches you to dismiss confirms. The fourth is not a question
+    at all: a word list that will not parse puts a red line under the board
+    while a list that *does* parse gets a floating notification — the louder
+    channel is on the happier event, which is backwards. That one probably wants
+    gpui-kit's notification rather than a dialog, and it is worth fixing
+    whichever way the other three go. Closing the window mid-word is
+    deliberately not on this list: item 11 closes that hole by remembering the
+    word instead of asking about it, and the two are alternatives.
 
 **Not planned:** networked multiplayer — the original's external layer is the one
 thing the port deliberately dropped, and this would only bring it back — fetching
