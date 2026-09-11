@@ -41,13 +41,13 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 153 tests and finishes in under a second — every one of them is
+`cargo test` is 155 tests and finishes in under a second — every one of them is
 in-file in a module with no GPUI types in it, so nothing there opens a window.
-That holds even for the eleven in `src/ui/mod.rs`: they cover its pure helpers
+That holds even for the thirteen in `src/ui/mod.rs`: they cover its pure helpers
 (`shortcut_legend` from item 7, and `plural` / `points` /
-`reset_stats_summary` from item 10), which take plain data and return plain
-data, and the test module imports them by name rather than with a
-`use super::*` — see gotcha 10 for why that matters.
+`reset_stats_summary` / `dialog_top_margin` from item 10), which take plain data
+and return plain data, and the test module imports them by name rather than with
+a `use super::*` — see gotcha 10 for why that matters.
 
 ## Layout
 
@@ -373,8 +373,35 @@ has almost nothing left to darken. Measured off headless captures the stock
 tokens moved the board from 22 to 18 in dark and 250 to 237 in light — a dialog
 that reads as "slightly greyed", not "modal".
 
-`OVERLAY_DIM_LIGHT` / `OVERLAY_DIM_DARK` in `src/ui/mod.rs` override it to 35%
-and 50%, which measure 250 → 163 and 22 → 11. Note that the two numbers are not
+`OVERLAY_DIM_LIGHT` / `OVERLAY_DIM_DARK` in `src/ui/mod.rs` override it to 45%
+and 60%, which measure 250 → 137 and 22 → 9. Note that the two numbers are not
 a pair: light is *lower* and dims *more*, because white has further to fall.
 The override is applied in `apply_theme` and gotcha 2 is why it has to live
 there rather than at startup.
+
+**The dialog's position cannot be overridden, but the margin in front of it
+can.** `Dialog::render` puts the box at `x = width / 2 - dialog / 2` and
+`y = margin_top.unwrap_or(view_size.height / 10.)`
+(`gpui-component-0.6.0/src/dialog/dialog.rs:498-499`), and that pair is applied
+*after* the caller's own `refine_style` under the comment "There style is high
+priority, can't be overridden" — then `top` is set a second time inside the open
+animation as `top(y * delta)`. So styling `top` is a dead end, and it is one
+that fails silently. What works is that the box is positioned **`relative`**,
+not absolute: its `top` is an offset from wherever the box would otherwise sit,
+and an ordinary top margin moves that. `AlertDialog` implements `Styled`
+straight onto the surface it builds (`dialog/alert_dialog.rs:313`), so
+`.mt(px(n))` on it moves the dialog down by exactly `n` — verified on captures
+at `n = 200`. `DIALOG_TOP_FRACTION` and `dialog_top_margin` in `src/ui/mod.rs`
+are that margin, put where it lands the top edge three tenths down the window
+rather than gpui-kit's one tenth.
+
+Two things that do **not** work, so nobody has to re-derive them: auto margins
+(`my_auto`) move nothing here, because this layout distributes no free space;
+and `margin_top`, which would express the offset directly, is on `Dialog` with
+no passthrough from `AlertDialog` — and swapping to `Dialog` costs the header
+block and the OK/Cancel footer that `AlertDialog` composes (`Dialog::header` is
+`pub(crate)`, and a bare `Dialog` renders no buttons of its own), as well as the
+structural refusal to dismiss on a backdrop click. The margin is also the reason
+the placement is a fraction of the window rather than true centring: the
+dialog's own height is not known until it has been laid out, which is after the
+builder that would need it has run.

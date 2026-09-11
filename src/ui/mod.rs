@@ -179,8 +179,8 @@ impl From<ThemeMode> for ThemeChoice {
 /// black wash over a board that is already near-black and there is almost
 /// nothing left to darken. So the two numbers are not one number and its
 /// counterpart — light needs less because white has further to fall.
-const OVERLAY_DIM_LIGHT: f32 = 0.35;
-const OVERLAY_DIM_DARK: f32 = 0.5;
+const OVERLAY_DIM_LIGHT: f32 = 0.45;
+const OVERLAY_DIM_DARK: f32 = 0.6;
 
 /// Set the theme, and re-apply the one token this game overrides.
 ///
@@ -418,6 +418,39 @@ fn reset_stats_summary(stats: &Stats) -> String {
         plural(played, "word"),
         stats.best_streak,
     )
+}
+
+/// How far down the window the dialog's top edge should sit, and how far down
+/// gpui-kit puts it on its own.
+///
+/// `Dialog::render` positions the box at `view_size.height / 10.`
+/// (`gpui-component-0.6.0/src/dialog/dialog.rs:498`) and that `top` cannot be
+/// overridden: it is applied after the caller's own style, and set a second
+/// time inside the open animation as `top(y * delta)`. What *can* be moved is
+/// where the box starts from — the popup is positioned `relative`, so its
+/// `top` is an offset from its flow position, and an ordinary top margin
+/// moves that. [`dialog_top_margin`] is the difference between the two
+/// fractions, and `AlertDialog` takes it as a plain `.mt()` because it
+/// implements `Styled`.
+///
+/// A tenth of the way down reads as hung off the top edge rather than placed,
+/// the more so since the default window became 1000 × 800. A third is the
+/// familiar spot: just above the true centre, which is where a modal is
+/// expected and where dead centre would look slightly low.
+const DIALOG_TOP_FRACTION: f32 = 0.3;
+const GPUI_KIT_DIALOG_TOP_FRACTION: f32 = 0.1;
+
+/// The top margin that moves the dialog from gpui-kit's tenth to
+/// [`DIALOG_TOP_FRACTION`], for a window this tall.
+///
+/// A fraction of the window rather than `(window - dialog) / 2` because the
+/// dialog's own height is not known until it has been laid out, and the
+/// builder that would need it runs before that. The trade is that this is a
+/// placement, not an exact centring — but it is one that holds at every
+/// window size, and the builder re-runs on every frame, so it follows a
+/// resize.
+fn dialog_top_margin(window_height: f32) -> f32 {
+    (window_height * (DIALOG_TOP_FRACTION - GPUI_KIT_DIALOG_TOP_FRACTION)).max(0.)
 }
 
 /// A whole-number percentage of a `0.0..=1.0` rate, e.g. `"75%"`.
@@ -826,9 +859,12 @@ impl HangmanView {
         let summary = reset_stats_summary(self.session.stats());
         let view = cx.weak_entity();
 
-        window.open_alert_dialog(cx, move |alert, _, cx| {
+        window.open_alert_dialog(cx, move |alert, window, cx| {
             let view = view.clone();
             alert
+                .mt(px(dialog_top_margin(
+                    window.viewport_size().height.as_f32(),
+                )))
                 .icon(Icon::new(IconName::TriangleAlert).text_color(cx.theme().red))
                 .title(RESET_TITLE)
                 .description(summary.clone())
@@ -2146,7 +2182,8 @@ mod tests {
     // this module's `gpui_kit::*` glob — and with it gpui's own `test` macro,
     // which shadows the built-in attribute and blows the recursion limit.
     use super::{
-        RESET_NOTHING, Shortcut, Stats, plural, points, reset_stats_summary, shortcut_legend,
+        DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, RESET_NOTHING, Shortcut, Stats,
+        dialog_top_margin, plural, points, reset_stats_summary, shortcut_legend,
     };
     use crate::game::{Difficulty, Game};
 
@@ -2320,5 +2357,28 @@ mod tests {
             legend(&game).contains(&(Shortcut::OpenWordList, true)),
             "Ctrl+O works in every state the game can be in"
         );
+    }
+
+    #[test]
+    fn the_dialog_margin_lands_its_top_edge_on_the_chosen_fraction() {
+        // The margin is the gap between where gpui-kit puts the box and where
+        // we want it, so the two added back together are the whole rule.
+        for height in [660., 800., 1024., 1440.] {
+            let top = height * GPUI_KIT_DIALOG_TOP_FRACTION + dialog_top_margin(height);
+            assert!(
+                (top - height * DIALOG_TOP_FRACTION).abs() < 0.01,
+                "a {height}px window should open the dialog at {}px, not {top}px",
+                height * DIALOG_TOP_FRACTION,
+            );
+        }
+    }
+
+    #[test]
+    fn the_dialog_never_gets_a_negative_margin() {
+        // Nothing can drive the window height below zero today; the clamp is
+        // there so that a future `DIALOG_TOP_FRACTION` under a tenth moves the
+        // dialog back to gpui-kit's own spot rather than off the top edge.
+        assert_eq!(dialog_top_margin(0.), 0.);
+        assert_eq!(dialog_top_margin(-10.), 0.);
     }
 }
