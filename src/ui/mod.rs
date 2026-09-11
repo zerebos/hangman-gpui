@@ -11,11 +11,14 @@ mod gallows;
 use std::time::Duration;
 
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::button::{
+    Button, ButtonCustomVariant, ButtonGroup, ButtonVariant, ButtonVariants as _,
+};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Colorize as _, Disableable as _, IconName, Root, Selectable as _,
+    ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Root, Selectable as _,
     Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -24,7 +27,7 @@ use gpui_kit::*;
 use crate::audio::Audio;
 use crate::game::{Cell, Difficulty, Game, GameResult, GuessResult, HintResult, MatchOutcome};
 use crate::settings::{Rect, Settings, ThemeChoice, WindowFrame};
-use crate::stats::{DifficultyStats, Session};
+use crate::stats::{DifficultyStats, Session, Stats};
 use gallows::gallows;
 
 /// The key context this view claims. Key bindings registered against it (see
@@ -77,6 +80,26 @@ const IDLE_HINT: &str = "Type a letter, or click one above.";
 const HINT_TOOLTIP: &str = "Reveal a letter — costs one wrong guess";
 const HINT_TOOLTIP_LAST_GUESS: &str = "No hint: it would cost the last guess you have";
 const HINT_TOOLTIP_OVER: &str = "No hint: this word is already finished";
+
+/// The `Reset stats` confirmation, which is the one dialog in the window.
+///
+/// Its wording carries the whole point of asking: the button is one click from
+/// a tally built up over weeks, and `Reset` on its own does not say what goes.
+const RESET_TITLE: &str = "Reset lifetime stats?";
+const RESET_OK: &str = "Reset";
+const RESET_CANCEL: &str = "Keep them";
+/// The dialog is reachable with nothing saved — a first launch with the stats
+/// panel open — and a warning about losing nothing would be a lie.
+const RESET_NOTHING: &str = "There is nothing saved yet, so this costs you nothing.";
+/// Said after the numbers, and the reason the dialog exists at all.
+///
+/// It names the match score as well as the lifetime tally because
+/// `Session::reset_stats` clears both: `SCORE` on the board is the points the
+/// match on screen has earned, and those words are being unmade. The word
+/// itself — its letters, its guesses, its gallows — survives, which is the
+/// half a player is most likely to be worried about.
+const RESET_FOREVER: &str = "go back to zero in every difficulty, along with the score of the match you \
+     are playing. There is no undo, though the word itself is not touched.";
 
 /// The alert line after a hint lands. It names the letter, because the word
 /// row is not the only place the player is looking, and it says what the hint
@@ -150,6 +173,51 @@ impl From<ThemeMode> for ThemeChoice {
         } else {
             ThemeChoice::Light
         }
+    }
+}
+
+/// How far the dialog backdrop dims the board, per theme.
+///
+/// gpui-kit's own token is black at 5% in light and 20% in dark
+/// (`gpui-component-0.6.0/src/theme/default-theme.json`), and both are too
+/// weak to read as a modal here. The dark one is the instructive case: it is
+/// four times the alpha of the light one and lands *softer*, because it is a
+/// black wash over a board that is already near-black and there is almost
+/// nothing left to darken. So the two numbers are not one number and its
+/// counterpart — light needs less because white has further to fall.
+const OVERLAY_DIM_LIGHT: f32 = 0.45;
+const OVERLAY_DIM_DARK: f32 = 0.6;
+
+/// Set the theme, and re-apply the one token this game overrides.
+///
+/// **Both callers must come through here**, `main.rs` at startup as much as
+/// the toggle in the title bar. `Theme::change` rebuilds the whole colour set
+/// from the theme config (`theme/mod.rs:245-255`), so an overlay written once
+/// at startup is silently reverted by the first press of the toggle: the
+/// dialog would dim properly until you changed theme, and never again.
+pub fn apply_theme(mode: impl Into<ThemeMode>, window: Option<&mut Window>, cx: &mut App) {
+    let mode = mode.into();
+
+    // `None`, not `window`: `Theme::change` refreshes at the end, which would
+    // repaint with the token it has just reset. The refresh is done below,
+    // once the override is back in.
+    Theme::change(mode, None, cx);
+
+    let dim = if mode.is_dark() {
+        OVERLAY_DIM_DARK
+    } else {
+        OVERLAY_DIM_LIGHT
+    };
+    Theme::global_mut(cx).colors.overlay = hsla(0., 0., 0., dim);
+    // The Base layer holds its own copy of the tokens and a field written
+    // straight onto `Theme` does not reach it. `overlay` is read by
+    // gpui-component rather than Base, so this is not load-bearing today — it
+    // is the documented contract for `global_mut`, and the next token someone
+    // overrides here may well need it.
+    Theme::sync_base(cx);
+
+    if let Some(window) = window {
+        window.refresh();
     }
 }
 
@@ -327,12 +395,91 @@ fn blend(from: Hsla, to: Hsla, progress: f32) -> Hsla {
 /// `"840 points"`, and `"1 point"` — because the summary line reads as a
 /// sentence and `1 points` in it would be the only thing anyone noticed.
 fn points(points: u32) -> String {
-    format!("{points} point{}", if points == 1 { "" } else { "s" })
+    plural(points.into(), "point")
+}
+
+/// `"3 words"`, `"1 word"` — the same rule as [`points`], for any noun that
+/// takes a plain `s`.
+fn plural(count: u64, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+}
+
+/// What the `Reset stats` dialog says is about to be thrown away.
+///
+/// Pure, and separate from the dialog that shows it, for the reason the rest
+/// of this crate splits that way: the component is gpui-kit's and can only be
+/// judged by eye, but the sentence in it is arithmetic over [`Stats`] and a
+/// test can hold it to account. It names the three numbers the panel behind
+/// the dialog is showing, so the player is warned in the same terms they were
+/// just reading.
+fn reset_stats_summary(stats: &Stats) -> String {
+    // `Stats::is_empty`, not the three numbers quoted below: those are what a
+    // player would notice, but the reset clears every field, and a hand-edited
+    // file can hold a match count or one difficulty's bucket with none of the
+    // three behind it. Promising it costs nothing would then be a lie.
+    if stats.is_empty() {
+        return RESET_NOTHING.to_string();
+    }
+
+    let played = u64::from(stats.words_played());
+
+    format!(
+        "{}, {} and a best streak of {} {RESET_FOREVER}",
+        plural(stats.points, "point"),
+        plural(played, "word"),
+        stats.best_streak,
+    )
+}
+
+/// How far down the window the dialog's top edge should sit, and how far down
+/// gpui-kit puts it on its own.
+///
+/// `Dialog::render` positions the box at `view_size.height / 10.`
+/// (`gpui-component-0.6.0/src/dialog/dialog.rs:498`) and that `top` cannot be
+/// overridden: it is applied after the caller's own style, and set a second
+/// time inside the open animation as `top(y * delta)`. What *can* be moved is
+/// where the box starts from — the popup is positioned `relative`, so its
+/// `top` is an offset from its flow position, and an ordinary top margin
+/// moves that. [`dialog_top_margin`] is the difference between the two
+/// fractions, and `AlertDialog` takes it as a plain `.mt()` because it
+/// implements `Styled`.
+///
+/// A tenth of the way down reads as hung off the top edge rather than placed,
+/// the more so since the default window became 1000 × 800. A third is the
+/// familiar spot: just above the true centre, which is where a modal is
+/// expected and where dead centre would look slightly low.
+const DIALOG_TOP_FRACTION: f32 = 0.3;
+const GPUI_KIT_DIALOG_TOP_FRACTION: f32 = 0.1;
+
+/// The top margin that moves the dialog from gpui-kit's tenth to
+/// [`DIALOG_TOP_FRACTION`], for a window this tall.
+///
+/// A fraction of the window rather than `(window - dialog) / 2` because the
+/// dialog's own height is not known until it has been laid out, and the
+/// builder that would need it runs before that. The trade is that this is a
+/// placement, not an exact centring — but it is one that holds at every
+/// window size, and the builder re-runs on every frame, so it follows a
+/// resize.
+fn dialog_top_margin(window_height: f32) -> f32 {
+    (window_height * (DIALOG_TOP_FRACTION - GPUI_KIT_DIALOG_TOP_FRACTION)).max(0.)
 }
 
 /// A whole-number percentage of a `0.0..=1.0` rate, e.g. `"75%"`.
 fn percent(rate: f32) -> String {
     format!("{:.0}%", rate * 100.)
+}
+
+/// Whether a gpui-kit dialog is on screen.
+///
+/// The dialog layer is rendered as a child of the very element that owns this
+/// window's key context and its `on_key_down`, so a key pressed while a dialog
+/// is up still bubbles all the way here: without this guard a letter typed at
+/// the confirmation would be guessed on the board behind it, and Ctrl+H would
+/// spend a wrong guess the player cannot see happen. The dialog's own Escape
+/// and Enter never reach this — gpui-kit binds them to `Cancel`/`Confirm` in
+/// the dialog's own `Dialog` key context, which is closer to the focus.
+fn dialog_is_open(window: &mut Window, cx: &mut App) -> bool {
+    window.has_active_dialog(cx)
 }
 
 actions!(hangman, [OpenWordList, ChangeWord, Hint]);
@@ -666,7 +813,10 @@ impl HangmanView {
         cx.notify();
     }
 
-    fn on_hint(&mut self, _: &Hint, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_hint(&mut self, _: &Hint, window: &mut Window, cx: &mut Context<Self>) {
+        if dialog_is_open(window, cx) {
+            return;
+        }
         self.hint(cx);
     }
 
@@ -698,7 +848,53 @@ impl HangmanView {
         earned
     }
 
-    /// Throw the lifetime tally away, from the button in the stats panel.
+    /// Ask before throwing the lifetime tally away, then do it if told to.
+    ///
+    /// The window's one dialog, and deliberately its most destructive button:
+    /// everything else here is either reversible or costs a single word, so
+    /// this is the only place an interruption earns its keep.
+    ///
+    /// gpui-kit's `AlertDialog` is a good fit for exactly that shape. It is
+    /// the opinionated wrapper over `Dialog`: no close ✕, no dismissal by
+    /// clicking the backdrop — `AlertDialog::overlay_closable` is deprecated
+    /// to a no-op rather than merely defaulted off — so the only ways out are
+    /// the two buttons and Escape, which is what a confirm should offer. Both
+    /// callbacks return a `bool` saying whether to close, so a dialog can
+    /// refuse to go; this one always accepts.
+    ///
+    /// The callbacks are plain `Fn(&ClickEvent, &mut Window, &mut App)`, not
+    /// `cx.listener`s, so reaching the view from inside means a `WeakEntity`
+    /// — and the builder is an `Fn` re-run on every frame the dialog is on
+    /// screen, so everything it captures has to be cloned rather than moved.
+    fn confirm_reset_stats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let summary = reset_stats_summary(self.session.stats());
+        let view = cx.weak_entity();
+
+        window.open_alert_dialog(cx, move |alert, window, cx| {
+            let view = view.clone();
+            alert
+                .mt(px(dialog_top_margin(
+                    window.viewport_size().height.as_f32(),
+                )))
+                .icon(Icon::new(IconName::TriangleAlert).text_color(cx.theme().red))
+                .title(RESET_TITLE)
+                .description(summary.clone())
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(RESET_OK)
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text(RESET_CANCEL)
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    view.update(cx, |this, cx| this.reset_stats(cx)).ok();
+                    true
+                })
+        });
+    }
+
+    /// Throw the lifetime tally away, once [`Self::confirm_reset_stats`] has
+    /// been answered.
     fn reset_stats(&mut self, cx: &mut Context<Self>) {
         self.session.reset_stats();
         self.settings.stats = self.session.stats().clone();
@@ -791,25 +987,34 @@ impl HangmanView {
     ///
     /// `Theme` is a GPUI *global* — one value owned by the app rather than by
     /// any view — so swapping it restyles every gpui-kit component at once.
-    /// Handing `Theme::change` the window makes it repaint immediately.
+    /// The swap goes through [`apply_theme`] rather than `Theme::change`,
+    /// which is what puts the overlay override back afterwards; handing it the
+    /// window is what repaints, and it does that itself, last.
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let next = if cx.theme().is_dark() {
             ThemeMode::Light
         } else {
             ThemeMode::Dark
         };
-        Theme::change(next, Some(window), cx);
+        apply_theme(next, Some(window), cx);
         self.settings.theme = next.into();
         self.settings.save();
         cx.notify();
     }
 
-    fn on_change_word(&mut self, _: &ChangeWord, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_change_word(&mut self, _: &ChangeWord, window: &mut Window, cx: &mut Context<Self>) {
+        if dialog_is_open(window, cx) {
+            return;
+        }
         self.give_up(cx);
     }
 
     /// The original's "Game > Open File...": pick a `.txt` with one word per line.
     fn on_open_word_list(&mut self, _: &OpenWordList, window: &mut Window, cx: &mut Context<Self>) {
+        if dialog_is_open(window, cx) {
+            return;
+        }
+
         // The native picker answers on a channel, so the rest of this runs in a
         // task. `PathPromptOptions` has no extension filter, hence the prompt text.
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -873,6 +1078,10 @@ impl HangmanView {
 
     /// Typing a letter guesses it — the original had no keyboard input at all.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if dialog_is_open(window, cx) {
+            return;
+        }
+
         let keystroke = &event.keystroke;
         // Let chords through so ctrl-o and ctrl-n stay shortcuts, not guesses.
         if keystroke.modifiers.control || keystroke.modifiers.alt || keystroke.modifiers.platform {
@@ -1191,10 +1400,12 @@ impl HangmanView {
     /// The lifetime stats panel, folded out under the board by the toolbar's
     /// Stats button.
     ///
-    /// Inline and collapsible rather than a dialog on purpose: gpui-kit ships a
-    /// `Modal` and a `Dialog`, but this window already has every piece it needs
-    /// — `panel`, `eyebrow`, `render_stat` — and an unverified component API is
-    /// exactly the trap the project notes warn about.
+    /// Inline and collapsible rather than a dialog on purpose: this window
+    /// already has every piece it needs — `panel`, `eyebrow`, `render_stat` —
+    /// and a panel of numbers you may want to read while you play is the wrong
+    /// thing to put behind a backdrop that blocks the board. The `Reset stats`
+    /// button inside it is the opposite case, and does open one; see
+    /// [`HangmanView::confirm_reset_stats`].
     fn render_stats_panel(&self, cx: &Context<Self>) -> impl IntoElement {
         let stats = self.session.stats();
 
@@ -1219,7 +1430,9 @@ impl HangmanView {
                             .icon(IconName::Delete)
                             .label("Reset stats")
                             .tooltip("Throw away every point, streak and tally")
-                            .on_click(cx.listener(|this, _, _, cx| this.reset_stats(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.confirm_reset_stats(window, cx)
+                            })),
                     ),
             )
             .child(
@@ -1978,8 +2191,72 @@ impl Render for HangmanView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shortcut, shortcut_legend};
+    // Named one by one rather than with a `use super::*`, which would drag in
+    // this module's `gpui_kit::*` glob — and with it gpui's own `test` macro,
+    // which shadows the built-in attribute and blows the recursion limit.
+    use super::{
+        DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, RESET_NOTHING, Shortcut, Stats,
+        dialog_top_margin, plural, points, reset_stats_summary, shortcut_legend,
+    };
     use crate::game::{Difficulty, Game};
+
+    // `Stats` has a private field, so it is filled in rather than built from a
+    // literal — which is the right shape for this anyway: only the four
+    // numbers the warning quotes matter here.
+    fn stats(points: u64, won: u32, lost: u32, best_streak: u32) -> Stats {
+        let mut stats = Stats::default();
+        stats.points = points;
+        stats.words_won = won;
+        stats.words_lost = lost;
+        stats.best_streak = best_streak;
+        stats
+    }
+
+    #[test]
+    fn plural_says_s_for_everything_but_one() {
+        assert_eq!(plural(0, "word"), "0 words");
+        assert_eq!(plural(1, "word"), "1 word");
+        assert_eq!(plural(2, "word"), "2 words");
+    }
+
+    #[test]
+    fn points_is_plural_of_point() {
+        assert_eq!(points(1), "1 point");
+        assert_eq!(points(840), "840 points");
+    }
+
+    #[test]
+    fn the_reset_warning_names_what_is_lost() {
+        let summary = reset_stats_summary(&stats(9210, 31, 9, 11));
+
+        assert!(summary.starts_with("9210 points, 40 words and a best streak of 11"));
+        assert!(summary.contains("no undo"));
+    }
+
+    #[test]
+    fn the_reset_warning_counts_lost_words_too() {
+        // Words played is wins *and* losses: resetting throws away the whole
+        // record, not just the flattering half of it.
+        assert!(reset_stats_summary(&stats(50, 0, 3, 0)).contains("3 words"));
+    }
+
+    #[test]
+    fn the_reset_warning_does_not_threaten_an_empty_tally() {
+        // A first launch with the stats panel open can reach the button, and
+        // a dialog warning about losing nothing would be crying wolf.
+        assert_eq!(reset_stats_summary(&Stats::default()), RESET_NOTHING);
+    }
+
+    #[test]
+    fn a_streak_alone_is_still_worth_warning_about() {
+        // Points and words can both be zero with a best streak behind them:
+        // every word so far was won on a list of one, say. The tally is not
+        // empty, so the warning is the real one.
+        let summary = reset_stats_summary(&stats(0, 0, 0, 4));
+
+        assert_ne!(summary, RESET_NOTHING);
+        assert!(summary.contains("best streak of 4"));
+    }
 
     /// Everything in here goes through [`shortcut_legend`], which takes a
     /// `&Game` and returns plain data — no GPUI type is constructed and no
@@ -2093,5 +2370,28 @@ mod tests {
             legend(&game).contains(&(Shortcut::OpenWordList, true)),
             "Ctrl+O works in every state the game can be in"
         );
+    }
+
+    #[test]
+    fn the_dialog_margin_lands_its_top_edge_on_the_chosen_fraction() {
+        // The margin is the gap between where gpui-kit puts the box and where
+        // we want it, so the two added back together are the whole rule.
+        for height in [660., 800., 1024., 1440.] {
+            let top = height * GPUI_KIT_DIALOG_TOP_FRACTION + dialog_top_margin(height);
+            assert!(
+                (top - height * DIALOG_TOP_FRACTION).abs() < 0.01,
+                "a {height}px window should open the dialog at {}px, not {top}px",
+                height * DIALOG_TOP_FRACTION,
+            );
+        }
+    }
+
+    #[test]
+    fn the_dialog_never_gets_a_negative_margin() {
+        // Nothing can drive the window height below zero today; the clamp is
+        // there so that a future `DIALOG_TOP_FRACTION` under a tenth moves the
+        // dialog back to gpui-kit's own spot rather than off the top edge.
+        assert_eq!(dialog_top_margin(0.), 0.);
+        assert_eq!(dialog_top_margin(-10.), 0.);
     }
 }

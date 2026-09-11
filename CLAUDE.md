@@ -41,8 +41,16 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 147 tests and finishes in under a second — every one of them is
-in-file in a module with no GPUI types in it, so nothing there opens a window.
+`cargo test` is 157 tests and finishes in under a second, because not one of them
+constructs a GPUI type, so nothing there opens a window. For the four GPUI-free
+modules that is guaranteed by the file: there is no gpui in them to construct.
+`src/ui/mod.rs` is the exception and the discipline there is a choice, not a
+guarantee — the view and all its gpui imports are in the same file as the tests,
+and its thirteen only reach pure helpers (`shortcut_legend` from item 7, and
+`plural` / `points` / `reset_stats_summary` / `dialog_top_margin` from item 10)
+that take plain data and return plain data. Anything added to that module has to
+keep to the same rule by hand, importing what it tests by name rather than with a
+`use super::*` — see gotcha 10 for why that matters.
 
 ## Layout
 
@@ -104,7 +112,7 @@ in-file in a module with no GPUI types in it, so nothing there opens a window.
   Nothing in either file assumes a budget of six wrong guesses — `parts_drawn`
   takes the budget as an argument, which is what let roadmap item 4 make the
   budget per-difficulty without touching either of them.
-- `src/stats.rs` — points, streaks and the lifetime tally, with 28 in-file
+- `src/stats.rs` — points, streaks and the lifetime tally, with 30 in-file
   tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
   for the score live so that `game.rs` needs none: `Difficulty` is mapped by
   hand there, exactly as `settings.rs` does it. `Stats` is the persisted value,
@@ -159,14 +167,25 @@ the title bar eating the event. Real bug in this repo, fixed in commit
 
 `gpui_component::init` calls `theme::init`, which does
 `Theme::change(ThemeMode::Light, None, cx)`
-(`gpui-component-0.6.0/src/theme/mod.rs:35`). This game is dark-first, so
-`main.rs` calls `Theme::change(settings.theme, None, cx)` **after**
-`gpui_kit::init(cx)` — where `settings.theme` is the saved choice and defaults
-to `ThemeMode::Dark`. Order matters.
+(`gpui-component-0.6.0/src/theme/mod.rs:35`). This game is dark-first, so the
+saved choice has to be applied **after** `gpui_kit::init(cx)`, not before —
+`settings.theme` defaults to `ThemeMode::Dark`. Order matters.
 
-`Theme` is a GPUI global, so one call restyles every component. Pass
-`Some(window)` from a click handler — `Theme::change` calls `window.refresh()`
-itself (`theme/mod.rs:261-262`), so you don't need to.
+`Theme` is a GPUI global, so one call restyles every component. `Theme::change`
+calls `window.refresh()` itself when you pass it `Some(window)`
+(`theme/mod.rs:261-262`), so you don't normally need to.
+
+**Nothing may call `Theme::change` directly any more.** `ui::apply_theme` is
+the only entry point, and both `main.rs` at startup and the title-bar toggle go
+through it. The reason is that this game overrides exactly one theme token —
+the dialog backdrop, see gotcha 10 — and `Theme::change` rebuilds the entire
+colour set from the theme config (`theme/mod.rs:245-255`), so an override
+written once at startup is silently reverted by the first press of the toggle.
+The symptom of getting this wrong is a dialog that dims correctly until you
+change theme and never again, which reads as a dialog bug rather than a theme
+one. `apply_theme` therefore passes `None` to `Theme::change` and calls
+`window.refresh()` itself, after the override is back in — refreshing first
+would paint the frame with the token that was just reset.
 
 The **scrollbar mode is the same story**: `theme::init` also calls
 `sync_scrollbar_appearance`, which picks `Scrolling` or `Hover` from the
@@ -299,3 +318,93 @@ was handed; the box was wrong one level up.
 The fix is `.w_full()` on the column, `flex_1` instead of a fixed height on the
 drawing so it takes the column's slack, and `flex_none` on the pip row so it
 keeps its own. Real bug in this repo, fixed in commit `315e8ef`.
+
+### 10. A dialog needs a layer rendered, a guard on the keyboard, and no `use super::*` in its tests
+
+`Reset stats` is the window's one gpui-kit dialog (`confirm_reset_stats` in
+`src/ui/mod.rs`), and it took four surprises to get there. The component itself
+is good: `AlertDialog` takes both themes from `cx.theme()` with nothing
+hard-coded, traps Tab, blocks the mouse behind it, and gets Escape and Enter
+for free — `gpui_kit::init` reaches `gpui_base::dialog::init`, which binds
+`escape` to `Cancel` and `enter` to `Confirm` in a `Dialog` key context
+(`gpui-base-0.6.0/src/dialog.rs:89-91`). The surprises are around it.
+
+**`Root` does not paint the dialog layer.** `impl Render for Root` renders the
+view, the tooltip overlay and the native-menu overlay, and nothing else
+(`gpui-component-0.6.0/src/root.rs:577`). `window.open_dialog` pushes onto
+`Root::active_dialogs` and stops there, so a window whose view never renders
+`Root::render_dialog_layer(window, cx)` opens dialogs that are invisible and
+un-dismissable — indistinguishable from a dialog that never opened. This view
+already renders it, next to `render_notification_layer`; keep both.
+
+**That layer is a child of this view**, so it is *inside* `key_context(KEY_CONTEXT)`
+and under the `on_key_down` that guesses letters. Keys pressed at a dialog
+bubble all the way up to it: without a guard, typing `A` at the confirmation
+guesses A on the board behind, and `Ctrl+H` spends a wrong guess the player
+cannot see happen. `dialog_is_open` (`window.has_active_dialog(cx)`) is that
+guard and every key path calls it first. Escape and Enter are the exception
+and need no guard — they are dispatched from the dialog's own key context,
+which is nearer the focus.
+
+**`AlertDialog` is the confirm-shaped one, `Dialog` the general one.** Alert
+defaults to no ✕ and refuses backdrop dismissal outright — its
+`overlay_closable` is `#[deprecated]` to a no-op rather than merely defaulted
+off (`dialog/alert_dialog.rs`) — which is what a destructive confirm wants.
+`Dialog` closes on a backdrop click by default. Both `on_ok` and `on_cancel`
+return a `bool` saying whether to close, so a dialog can refuse to go. Neither
+is a `cx.listener`: they are plain `Fn(&ClickEvent, &mut Window, &mut App)`,
+so reaching the view means a `WeakEntity`. The builder passed to
+`open_alert_dialog` is an `Fn` re-run every frame the dialog is on screen, so
+everything it captures must be cloned inside, not moved.
+
+**`#[test]` does not compile in a module that does `use super::*` here.**
+`src/ui/mod.rs` has `use gpui_kit::*`, which re-exports gpui's own `test`
+attribute macro; a glob beats the prelude, so `#[test]` resolves to that one
+and rustc dies with `recursion limit reached while expanding #[test]`. The
+error names neither gpui nor the glob and its suggestion — raise
+`recursion_limit` — is a blind alley. Import the handful of items the tests
+need by name instead. `game.rs` and friends never hit this because they import
+no gpui.
+
+**The backdrop dim is a theme token, and gpui-kit's default is too weak for
+this window.** It is `cx.theme().overlay`, which `default-theme.json` sets to
+black at **5%** in light and **20%** in dark, and there is no per-dialog knob
+for it — `Dialog::overlay(bool)` is on or off and nothing else. The dark
+default is the instructive one: four times the alpha of the light default, and
+it lands *softer*, because a black wash over a board that is already near-black
+has almost nothing left to darken. Measured off headless captures the stock
+tokens moved the board from 22 to 18 in dark and 250 to 237 in light — a dialog
+that reads as "slightly greyed", not "modal".
+
+`OVERLAY_DIM_LIGHT` / `OVERLAY_DIM_DARK` in `src/ui/mod.rs` override it to 45%
+and 60%, which measure 250 → 137 and 22 → 9. Note that the two numbers are not
+a pair: light is *lower* and dims *more*, because white has further to fall.
+The override is applied in `apply_theme` and gotcha 2 is why it has to live
+there rather than at startup.
+
+**The dialog's position cannot be overridden, but the margin in front of it
+can.** `Dialog::render` puts the box at `x = width / 2 - dialog / 2` and
+`y = margin_top.unwrap_or(view_size.height / 10.)`
+(`gpui-component-0.6.0/src/dialog/dialog.rs:498-499`), and that pair is applied
+*after* the caller's own `refine_style` under the comment "There style is high
+priority, can't be overridden" — then `top` is set a second time inside the open
+animation as `top(y * delta)`. So styling `top` is a dead end, and it is one
+that fails silently. What works is that the box is positioned **`relative`**,
+not absolute: its `top` is an offset from wherever the box would otherwise sit,
+and an ordinary top margin moves that. `AlertDialog` implements `Styled`
+straight onto the surface it builds (`dialog/alert_dialog.rs:313`), so
+`.mt(px(n))` on it moves the dialog down by exactly `n` — verified on captures
+at `n = 200`. `DIALOG_TOP_FRACTION` and `dialog_top_margin` in `src/ui/mod.rs`
+are that margin, put where it lands the top edge three tenths down the window
+rather than gpui-kit's one tenth.
+
+Two things that do **not** work, so nobody has to re-derive them: auto margins
+(`my_auto`) move nothing here, because this layout distributes no free space;
+and `margin_top`, which would express the offset directly, is on `Dialog` with
+no passthrough from `AlertDialog` — and swapping to `Dialog` costs the header
+block and the OK/Cancel footer that `AlertDialog` composes (`Dialog::header` is
+`pub(crate)`, and a bare `Dialog` renders no buttons of its own), as well as the
+structural refusal to dismiss on a backdrop click. The margin is also the reason
+the placement is a fraction of the window rather than true centring: the
+dialog's own height is not known until it has been laid out, which is after the
+builder that would need it has run.

@@ -6,7 +6,8 @@ use gpui_kit::*;
 
 use hangman_gpui::settings::Settings;
 use hangman_gpui::ui::{
-    ChangeWord, HangmanView, Hint, KEY_CONTEXT, MIN_WINDOW_SIZE, OpenWordList, window_bounds,
+    ChangeWord, HangmanView, Hint, KEY_CONTEXT, MIN_WINDOW_SIZE, OpenWordList, apply_theme,
+    window_bounds,
 };
 
 fn main() {
@@ -24,10 +25,13 @@ fn main() {
 
         // `gpui_kit::init` installs the light palette, so the saved choice has
         // to be applied after it, not before. `Theme` is a GPUI global, so this
-        // one call restyles every component. Swap it for
+        // one call restyles every component. `apply_theme` rather than
+        // `Theme::change` because the game overrides one token — the dialog
+        // backdrop — and every theme change has to put it back; see
+        // `ui::apply_theme`. Swap the mode for
         // `Theme::sync_system_appearance(None, cx)` to follow the desktop
         // instead — the in-window toggle overrides either way.
-        Theme::change(settings.theme, None, cx);
+        apply_theme(settings.theme, None, cx);
 
         // The play column is the only thing in this window that scrolls, and
         // with the default mode there was nothing to say so: the bar appears
@@ -37,7 +41,10 @@ fn main() {
         // "there is more" marker rather than furniture. This overrides
         // `theme::init`'s `sync_scrollbar_appearance`, which follows the
         // desktop's auto-hide preference — hence after `gpui_kit::init`, like
-        // the theme itself. The mode survives `Theme::change`, so the
+        // the theme itself. Unlike the dialog backdrop `apply_theme` has to
+        // keep putting back, this one is set once: it lives on
+        // `Theme::scrollbar_mode` and `base_theme()` rebuilds the Base copy
+        // from that field, so both halves of a theme change carry it and the
         // light/dark toggle does not undo it.
         Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);
 
