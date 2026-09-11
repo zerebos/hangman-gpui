@@ -92,8 +92,14 @@ const RESET_CANCEL: &str = "Keep them";
 /// panel open — and a warning about losing nothing would be a lie.
 const RESET_NOTHING: &str = "There is nothing saved yet, so this costs you nothing.";
 /// Said after the numbers, and the reason the dialog exists at all.
-const RESET_FOREVER: &str = "go back to zero in every difficulty, and there is no undo. The word you are \
-     playing is not touched.";
+///
+/// It names the match score as well as the lifetime tally because
+/// `Session::reset_stats` clears both: `SCORE` on the board is the points the
+/// match on screen has earned, and those words are being unmade. The word
+/// itself — its letters, its guesses, its gallows — survives, which is the
+/// half a player is most likely to be worried about.
+const RESET_FOREVER: &str = "go back to zero in every difficulty, along with the score of the match you \
+     are playing. There is no undo, though the word itself is not touched.";
 
 /// The alert line after a hint lands. It names the letter, because the word
 /// row is not the only place the player is looking, and it says what the hint
@@ -407,10 +413,15 @@ fn plural(count: u64, noun: &str) -> String {
 /// the dialog is showing, so the player is warned in the same terms they were
 /// just reading.
 fn reset_stats_summary(stats: &Stats) -> String {
-    let played = u64::from(stats.words_played());
-    if stats.points == 0 && played == 0 && stats.best_streak == 0 {
+    // `Stats::is_empty`, not the three numbers quoted below: those are what a
+    // player would notice, but the reset clears every field, and a hand-edited
+    // file can hold a match count or one difficulty's bucket with none of the
+    // three behind it. Promising it costs nothing would then be a lie.
+    if stats.is_empty() {
         return RESET_NOTHING.to_string();
     }
+
+    let played = u64::from(stats.words_played());
 
     format!(
         "{}, {} and a best streak of {} {RESET_FOREVER}",
@@ -976,7 +987,9 @@ impl HangmanView {
     ///
     /// `Theme` is a GPUI *global* — one value owned by the app rather than by
     /// any view — so swapping it restyles every gpui-kit component at once.
-    /// Handing `Theme::change` the window makes it repaint immediately.
+    /// The swap goes through [`apply_theme`] rather than `Theme::change`,
+    /// which is what puts the overlay override back afterwards; handing it the
+    /// window is what repaints, and it does that itself, last.
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let next = if cx.theme().is_dark() {
             ThemeMode::Light

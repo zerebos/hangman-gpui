@@ -240,6 +240,19 @@ impl Stats {
         *self = Self::default();
     }
 
+    /// Whether [`Stats::reset`] would throw anything away.
+    ///
+    /// The whole value against a fresh one, rather than the three numbers the
+    /// confirmation quotes: those are what a player would *notice*, but
+    /// `reset` clears every field, and the file this is read from is editable
+    /// by hand — a match count or one difficulty's bucket can be sitting in it
+    /// with nothing else behind it. The question a confirmation has to answer
+    /// is whether there is anything to lose, not whether there is anything to
+    /// show.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
     /// The bucket for `difficulty`, or `None` for a custom word list — which
     /// belongs to no difficulty and so is counted only in the lifetime totals.
     fn bucket_mut(&mut self, difficulty: Option<Difficulty>) -> Option<&mut DifficultyStats> {
@@ -819,5 +832,31 @@ mod tests {
                 3
             )
         );
+    }
+
+    #[test]
+    fn a_fresh_tally_is_empty_and_anything_recorded_is_not() {
+        let mut stats = Stats::default();
+        assert!(stats.is_empty());
+
+        stats.record_word(Some(Difficulty::Easy), GameResult::Lost, 0);
+        assert!(!stats.is_empty());
+
+        stats.reset();
+        assert!(stats.is_empty());
+    }
+
+    #[test]
+    fn a_match_on_its_own_is_not_an_empty_tally() {
+        // Nothing in normal play records a match without words behind it, but
+        // the file is hand-editable and `reset` would still clear this — which
+        // is exactly the case the three headline numbers miss.
+        let mut stats = Stats::default();
+        stats.record_match(Some(Difficulty::Easy), MatchOutcome::Win);
+
+        assert_eq!(stats.points, 0);
+        assert_eq!(stats.words_played(), 0);
+        assert_eq!(stats.best_streak, 0);
+        assert!(!stats.is_empty());
     }
 }

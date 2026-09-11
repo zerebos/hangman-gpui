@@ -41,13 +41,16 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 155 tests and finishes in under a second — every one of them is
-in-file in a module with no GPUI types in it, so nothing there opens a window.
-That holds even for the thirteen in `src/ui/mod.rs`: they cover its pure helpers
-(`shortcut_legend` from item 7, and `plural` / `points` /
-`reset_stats_summary` / `dialog_top_margin` from item 10), which take plain data
-and return plain data, and the test module imports them by name rather than with
-a `use super::*` — see gotcha 10 for why that matters.
+`cargo test` is 157 tests and finishes in under a second, because not one of them
+constructs a GPUI type, so nothing there opens a window. For the four GPUI-free
+modules that is guaranteed by the file: there is no gpui in them to construct.
+`src/ui/mod.rs` is the exception and the discipline there is a choice, not a
+guarantee — the view and all its gpui imports are in the same file as the tests,
+and its thirteen only reach pure helpers (`shortcut_legend` from item 7, and
+`plural` / `points` / `reset_stats_summary` / `dialog_top_margin` from item 10)
+that take plain data and return plain data. Anything added to that module has to
+keep to the same rule by hand, importing what it tests by name rather than with a
+`use super::*` — see gotcha 10 for why that matters.
 
 ## Layout
 
@@ -109,7 +112,7 @@ a `use super::*` — see gotcha 10 for why that matters.
   Nothing in either file assumes a budget of six wrong guesses — `parts_drawn`
   takes the budget as an argument, which is what let roadmap item 4 make the
   budget per-difficulty without touching either of them.
-- `src/stats.rs` — points, streaks and the lifetime tally, with 28 in-file
+- `src/stats.rs` — points, streaks and the lifetime tally, with 30 in-file
   tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
   for the score live so that `game.rs` needs none: `Difficulty` is mapped by
   hand there, exactly as `settings.rs` does it. `Stats` is the persisted value,
