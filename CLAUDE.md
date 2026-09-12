@@ -41,15 +41,16 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 174 tests and finishes in under a second, because not one of them
+`cargo test` is 181 tests and finishes in under a second, because not one of them
 constructs a GPUI type, so nothing there opens a window. For the four GPUI-free
 modules that is guaranteed by the file: there is no gpui in them to construct.
 `src/ui/mod.rs` is the exception and the discipline there is a choice, not a
 guarantee — the view and all its gpui imports are in the same file as the tests,
-and its thirty only reach pure helpers that take plain data and return plain
+and its thirty-seven only reach pure helpers that take plain data and return plain
 data: `shortcut_legend` from item 7, `plural` / `points` /
-`reset_stats_summary` / `dialog_top_margin` from item 10, and `subtitle` /
-`guess_count` / `key_state` / `hint_tooltip` / `match_summary` from item 9.
+`reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
+`guess_count` / `key_state` / `hint_tooltip` / `match_summary` from item 9, and
+`percent` / `shake_offset` / `Reveal::progress` / `Reveal::span` alongside them.
 Anything added to that module has to keep to the same rule by hand, importing
 what it tests by name rather than with a `use super::*` — see gotcha 10 for why
 that matters.

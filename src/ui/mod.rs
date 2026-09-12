@@ -2211,10 +2211,11 @@ mod tests {
     // this module's `gpui_kit::*` glob — and with it gpui's own `test` macro,
     // which shadows the built-in attribute and blows the recursion limit.
     use super::{
-        CUSTOM_LIST_SUBTITLE, DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, HINT_TOOLTIP,
-        HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, RESET_NOTHING, Shortcut, Stats,
-        dialog_top_margin, guess_count, hint_tooltip, key_state, match_summary, plural, points,
-        reset_stats_summary, shortcut_legend, subtitle,
+        CUSTOM_LIST_SUBTITLE, DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, GUESS_REVEAL,
+        HINT_TOOLTIP, HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, RESET_NOTHING,
+        SHAKE_DISTANCE, Shortcut, Stats, WIN_REVEAL, dialog_top_margin, guess_count, hint_tooltip,
+        key_state, match_summary, percent, plural, points, reset_stats_summary, shake_offset,
+        shortcut_legend, subtitle,
     };
     use crate::game::{Difficulty, Game, GameResult};
     use crate::stats::Session;
@@ -2645,5 +2646,108 @@ mod tests {
             "the lifetime 9210 must not leak into the match line: {}",
             summary.text,
         );
+    }
+    // ----------------------------------------------------------- the rest of it
+    //
+    // Three more of this module's free functions that are plain arithmetic and
+    // were simply never covered: the win-rate string, the wrong-guess shake and
+    // the stagger behind both reveals. None of them can change a rule, but each
+    // has an invariant its own doc comment states, and a retune that broke one
+    // would show up only as something looking subtly wrong on screen.
+
+    #[test]
+    fn a_rate_is_a_whole_number_percentage() {
+        assert_eq!(percent(0.), "0%");
+        assert_eq!(percent(0.5), "50%");
+        assert_eq!(percent(1.), "100%");
+        assert_eq!(percent(2. / 3.), "67%");
+    }
+
+    #[test]
+    fn a_percentage_rounds_and_can_flatter_or_insult_you() {
+        // Documenting rather than objecting. Rounding to a whole number means
+        // the stats panel reads `100%` at 199 words out of 200 and `0%` at one
+        // out of 250 — the numbers beside it are exact, so this is the cheap
+        // end of a trade-off, but a future reader should find it stated.
+        assert_eq!(percent(199. / 200.), "100%");
+        assert_eq!(percent(1. / 250.), "0%");
+    }
+
+    #[test]
+    fn the_shake_starts_and_ends_exactly_where_the_row_lives() {
+        // The whole point of the damped sine: a shake that stopped off-centre
+        // would move the word row for good, and nothing would put it back.
+        assert_eq!(shake_offset(0.), 0.);
+        assert!(
+            shake_offset(1.).abs() < 0.001,
+            "a finished shake left the row at {}",
+            shake_offset(1.),
+        );
+    }
+
+    #[test]
+    fn the_shake_stays_inside_its_own_distance_and_actually_shakes() {
+        let samples: Vec<f32> = (0..=100)
+            .map(|step| shake_offset(step as f32 / 100.))
+            .collect();
+
+        assert!(
+            samples.iter().all(|offset| offset.abs() <= SHAKE_DISTANCE),
+            "the shake threw the row further than SHAKE_DISTANCE",
+        );
+        // Without this the previous test would pass for a function that
+        // returned zero throughout, which is not a shake.
+        assert!(samples.iter().any(|offset| *offset > 1.));
+        assert!(samples.iter().any(|offset| *offset < -1.));
+    }
+
+    #[test]
+    fn every_letter_of_a_reveal_is_finished_when_the_animation_is() {
+        // The claim `Reveal::progress` makes about itself, and the one that
+        // matters: the animation's span is sized for the *last* letter, so
+        // every earlier one has to be done at `delta == 1` too, or a word ends
+        // the flourish with letters still part-way faded.
+        //
+        // Not an exact `1.0`: the clamp's upper bound is never reached for
+        // some indices because `delta * span - delay` loses a bit to f32
+        // rounding, so the last letter of a long word finishes at 0.9999999.
+        // That is invisible as an opacity and it is not worth contorting the
+        // arithmetic for, but it is worth someone knowing before they write
+        // `assert_eq!(.., 1.)` and wonder why it fails.
+        for reveal in [WIN_REVEAL, GUESS_REVEAL] {
+            for index in 0..12 {
+                assert_eq!(reveal.progress(index, 0.), 0.);
+                assert!(
+                    (reveal.progress(index, 1.) - 1.).abs() < 1e-5,
+                    "letter {index} was still at {} when the reveal ended",
+                    reveal.progress(index, 1.),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reveal_staggers_later_letters_behind_earlier_ones() {
+        // This is the stagger itself: at any moment mid-animation a letter is
+        // no further along than the one before it, and the first is strictly
+        // ahead of the last. A `step` of zero would fade them all at once.
+        for delta in [0.2, 0.4, 0.6, 0.8] {
+            let progress: Vec<f32> = (0..8).map(|i| WIN_REVEAL.progress(i, delta)).collect();
+
+            assert!(
+                progress.windows(2).all(|pair| pair[0] >= pair[1]),
+                "letters ran out of order at delta {delta}: {progress:?}",
+            );
+            assert!(
+                progress[0] > progress[7],
+                "nothing was staggered at {delta}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reveal_runs_longer_the_more_letters_it_has_to_get_through() {
+        assert!(WIN_REVEAL.span(5) > WIN_REVEAL.span(0));
+        assert!(GUESS_REVEAL.span(1) > GUESS_REVEAL.span(0));
     }
 }
