@@ -357,150 +357,103 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. These are the twelve ideas agreed for where it goes next, roughly in
-the order they were argued about rather than in any committed order.
+mirroring it. Twelve ideas were agreed for where it goes next; nine have
+shipped and three are open. The numbering is the order they were argued about
+rather than any committed order, and it stays as it is even as items land —
+commit messages, pull requests and `CLAUDE.md` all cite these by number.
 
-### Game and rules
+### Still to do
 
-1. **Hints, at a cost** *(done).* `Hint` in the toolbar, or `Ctrl+H`, reveals a
-   letter you have not guessed and charges a wrong guess for it — the first of
-   the two variants that were on the table. The second, a small per-match
-   allowance, was not built: it needs a counter in [`Game`](src/game.rs), a
-   ruling on whether it refills between words, and a field in the settings file
-   to survive a launch, and it would still need a price for the hint after the
-   allowance ran out. Charging a guess needs none of that. It reuses the loss
-   path `guess` already runs, item 4 sizes it per difficulty for free — a tenth
-   of Easy, a sixth of Insane — and it needs no scoring change at all, because
-   a spent guess already costs the word ten points through `remaining_guesses`.
-   A hint is refused with one guess left, so it can never be the thing that
-   loses you the word; a hint that completes the word wins it. See
-   [Hints](#hints).
-2. **Scoring and streaks** *(done).* The bare `wins` / `losses` counters are
-   gone. A solved word now scores on the guesses you had left and the difficulty
-   you were playing, a run of solved words builds a bonus on top, and the
-   scoreboard shows the match's points beside the current and best streak. The
-   streak spans matches, difficulties and launches; only failing a word ends it.
-   The lifetime tally lives behind the toolbar's `Stats` button and is saved with
-   the rest of the settings — see [Scoring](#scoring).
-3. **Structured word packs.** Move the four ten-word lists into a serde format
-   that carries a category, a hint and a clue per word, so a match no longer
-   exhausts the pool.
-4. **Difficulty that changes the guess budget** *(done).* The budget was a hard
-   6 for everyone; it is `Difficulty::guess_budget` now — 10 on Easy, 8 on
-   Medium, 7 on Hard and the original's 6 on Insane, with 6 for a word list of
-   your own. The counter, the pips and the drawing all follow it, and the six
-   the original gave everybody survives as `DEFAULT_GUESS_BUDGET`, the fallback
-   for a game with no difficulty behind it. Item 6 is what made it a small
-   change: the gallows already took the budget as an argument, and its ten body
-   parts are exactly what a budget of 6..=10 needs to draw one new part per
-   wrong guess. See [The guess budget](#the-guess-budget). It also makes item 1
-   cheaper — a hint priced "in exchange for a wrong guess" now spends a budget
-   that difficulty already sizes, so the easy lists can afford one and Insane
-   can be made to hurt, with no second knob to invent.
+- **3. Structured word packs.** Move the four ten-word lists into a serde format
+  that carries a category, a hint and a clue per word, so a match no longer
+  exhausts the pool.
+- **11. Resume the word you were on.** Closing the window mid-word is the last
+  silent way out of a word you are losing: the settings file keeps the theme,
+  the window, the difficulty and the lifetime stats, and nothing at all about
+  the word in flight, so quitting and relaunching is a free reroll that keeps
+  your streak. Charging a loss on close would shut that door, but it would
+  also tax someone who just quit for the night, and invisibly — they would
+  never see it happen. Saving the word instead means quitting is not an escape
+  because you come back to it: the word, the letters guessed, the wrong-guess
+  count, the pool still to play and the match's points, restored at launch.
+  That needs a new key in [`Settings`](src/settings.rs) and a way to rehydrate
+  a [`Game`](src/game.rs) from one, both under the existing rule that a
+  malformed value falls back rather than failing loudly. It is worth having on
+  its own account as much as for the hole it closes.
+- **12. Decide which other moments deserve a dialog.** Item 10 answered whether
+  gpui-kit's dialogs are worth using; it did not answer where else to put
+  one, and the answer is not "everywhere destructive" — a game that stops to
+  ask four times an hour is worse than one that never asks. Four moments are
+  on the table, and they are not the same kind of moment.
+  Switching difficulty with a part-played word on the board is the closest
+  match to `Reset stats`: it charges a loss and ends the streak, and today it
+  is a tooltip you have to hover to read plus a notice afterwards telling you
+  what it already cost. Opening a word list does exactly the same thing for
+  exactly the same price, and has no warning at all — the file picker is the
+  only thing between the click and the loss, and it is not telling you the
+  word is at stake. `Change Word` is the doubtful one of the three: it is the
+  same loss, but the button says `Give up on this word` and the shortcut
+  strip repeats it, so the intent is already stated and a confirm risks being
+  the nag that teaches you to dismiss confirms. The fourth is not a question
+  at all: a word list that will not parse puts a red line under the board
+  while a list that *does* parse gets a floating notification — the louder
+  channel is on the happier event, which is backwards. That one probably wants
+  gpui-kit's notification rather than a dialog, and it is worth fixing
+  whichever way the other three go. Closing the window mid-word is
+  deliberately not on this list: item 11 closes that hole by remembering the
+  word instead of asking about it, and the two are alternatives.
 
-### UI and UX
+### Shipped
 
-5. **Animation and game feel** *(done).* Draw the newest bit of the gallows on
-   — a cross-fade between frames until item 6 replaced the frames — shake the
-   word on a wrong guess, fade the cells a correct guess turns over up into
-   place, stagger-reveal the letters on a win, pulse the wrong-guess pips, and
-   settle a letter key into the colour its guess earned it. Still snapping: the
-   keys that go out of play when the game ends.
-6. **Draw the gallows procedurally** *(done).* The seven pre-rendered PNGs are
-   gone; [`src/gallows.rs`](src/gallows.rs) describes the picture as polylines
-   and `src/ui/gallows.rs` paints them with `canvas()` and `PathBuilder`. It
-   scales to whatever room it is given, takes all three of its colours from the
-   theme, and spreads its body parts over any guess budget — which is what
-   unblocked item 4. The trade-off was real: it retired the bundled artwork.
-7. **Keyboard hints** *(done).* The shortcuts are on screen instead of being
-   folklore. A strip along the bottom of the window lists each one as a
-   `Kbd` chip beside what it does, greying the ones the game would currently
-   refuse and adding `Enter` only while there is a next word to deal, and the
-   toolbar's tooltips carry the same chip through `tooltip_with_action`
-   instead of the chord being typed into the sentence. Both read the binding
-   out of the keymap `main.rs` registers rather than repeating it, so they
-   cannot drift from it and each chord spells itself the way the platform does
-   — `Ctrl+H` here, `⌃H` on macOS. See [Controls](#controls).
-10. **Try gpui-kit's `Modal` and `Dialog`** *(done).* `Reset stats` was the
-    proving ground: destructive, self-contained, and the one button in the
-    window that cannot be played back out of. It now opens gpui-kit's
-    `AlertDialog` — the opinionated wrapper over `Dialog` — with the points,
-    the words and the best streak it is about to throw away written into the
-    question. The component came out well: it takes both themes from
-    `cx.theme()` with nothing hard-coded, Escape cancels and Enter confirms
-    with no bindings of our own, Tab cycles inside the dialog rather than
-    escaping to the board, and the backdrop blocks the mouse. Its *dim* was
-    the one thing worth overriding: gpui-kit's `overlay` token is black at 5%
-    in light and 20% in dark, which reads as slightly greyed rather than
-    modal, so the game sets 45% and 60% instead — and note which way round
-    those go, because a black wash over an already-dark board has less left to
-    darken than one over a white board. Its *placement* was the other: gpui-kit
-    pins a dialog a tenth of the way down the window, which reads as hung off
-    the top edge, and the position itself cannot be styled — the box is
-    positioned `relative`, though, so a top margin moves it, and the game uses
-    one to put the top edge three tenths down instead. Two more things are worth knowing
-    before the next dialog. `Root` does not paint the dialog layer
-    for you — the view has to render `Root::render_dialog_layer`, which this
-    one already did for notifications — and that layer sits *inside* the
-    window's key context, so a key pressed at a dialog still reaches the
-    board's `on_key_down` unless it is guarded; without the guard a letter
-    typed at the confirmation is guessed behind it. Of the two remaining
-    candidates the same component fits the difficulty-switch warning almost
-    exactly, since it is the same shape of question with a word rather than a
-    tally at stake; the end-of-match summary is the doubtful one, because it
-    is news rather than a question and interrupting a player who just won to
-    make them dismiss a box is a worse read than the footer line they have
-    now. Which of the rest are worth a dialog is item 12.
-
-### Craft
-
-8. **Persist settings** *(done).* The theme, the window geometry and the chosen
-   difficulty are written to a JSON file in the platform's config directory and
-   restored at startup — see [Settings](#settings). Item 2 added the lifetime
-   stats to the same file; the match's own score is still the one thing that is
-   not kept, because it belongs to the match and dies with it.
-9. **Make the UI testable.** Pull the pure helpers out of
-   [`src/ui/mod.rs`](src/ui/mod.rs) and cover them. Item 7 opened the file's
-   first test module by keeping its own rule — which shortcuts the legend
-   offers, and which of them are live — in a plain function over a `&Game`,
-   and item 10 followed it with the `Reset stats` warning's prose; the four
-   `&self` helpers next to them (`match_summary`, `subtitle`, `guess_count`,
-   `key_state`) are the rest of the job.
-11. **Resume the word you were on.** Closing the window mid-word is the last
-    silent way out of a word you are losing: the settings file keeps the theme,
-    the window, the difficulty and the lifetime stats, and nothing at all about
-    the word in flight, so quitting and relaunching is a free reroll that keeps
-    your streak. Charging a loss on close would shut that door, but it would
-    also tax someone who just quit for the night, and invisibly — they would
-    never see it happen. Saving the word instead means quitting is not an escape
-    because you come back to it: the word, the letters guessed, the wrong-guess
-    count, the pool still to play and the match's points, restored at launch.
-    That needs a new key in [`Settings`](src/settings.rs) and a way to rehydrate
-    a [`Game`](src/game.rs) from one, both under the existing rule that a
-    malformed value falls back rather than failing loudly. It is worth having on
-    its own account as much as for the hole it closes.
-12. **Decide which other moments deserve a dialog.** Item 10 answered whether
-    gpui-kit's dialogs are worth using; it did not answer where else to put
-    one, and the answer is not "everywhere destructive" — a game that stops to
-    ask four times an hour is worse than one that never asks. Four moments are
-    on the table, and they are not the same kind of moment.
-    Switching difficulty with a part-played word on the board is the closest
-    match to `Reset stats`: it charges a loss and ends the streak, and today it
-    is a tooltip you have to hover to read plus a notice afterwards telling you
-    what it already cost. Opening a word list does exactly the same thing for
-    exactly the same price, and has no warning at all — the file picker is the
-    only thing between the click and the loss, and it is not telling you the
-    word is at stake. `Change Word` is the doubtful one of the three: it is the
-    same loss, but the button says `Give up on this word` and the shortcut
-    strip repeats it, so the intent is already stated and a confirm risks being
-    the nag that teaches you to dismiss confirms. The fourth is not a question
-    at all: a word list that will not parse puts a red line under the board
-    while a list that *does* parse gets a floating notification — the louder
-    channel is on the happier event, which is backwards. That one probably wants
-    gpui-kit's notification rather than a dialog, and it is worth fixing
-    whichever way the other three go. Closing the window mid-word is
-    deliberately not on this list: item 11 closes that hole by remembering the
-    word instead of asking about it, and the two are alternatives.
+- **1. Hints, at a cost.** `Hint` in the toolbar, or `Ctrl+H`, reveals a letter
+  you have not guessed and charges a wrong guess for it. The other variant on
+  the table, a small per-match allowance, was turned down: it wants a counter,
+  a ruling on whether it refills between words, a settings key to survive a
+  launch, and a price for the hint after it runs out — and charging a guess
+  needs none of that. See [Hints](#hints).
+- **2. Scoring and streaks.** The bare `wins` / `losses` counters are gone. A
+  solved word scores on the guesses you had left and the difficulty you were
+  playing, a run of them builds a bonus, and the streak spans matches,
+  difficulties and launches — only failing a word ends it. See
+  [Scoring](#scoring).
+- **4. Difficulty that changes the guess budget.** `Difficulty::guess_budget` is
+  10 on Easy, 8 on Medium, 7 on Hard and the original's 6 on Insane, with 6 for
+  a word list of your own. Item 6 is what made it small: the gallows already
+  took the budget as an argument. See [The guess budget](#the-guess-budget).
+- **5. Animation and game feel.** The newest bit of the gallows draws itself on,
+  the word shakes on a wrong guess, correct cells fade up into place, a win
+  stagger-reveals the letters, the wrong-guess pips pulse and a letter key
+  settles into the colour its guess earned it.
+- **6. Draw the gallows procedurally.** The seven pre-rendered PNGs are gone;
+  [`src/gallows.rs`](src/gallows.rs) describes the picture as polylines and
+  `src/ui/gallows.rs` paints them with `canvas()` and `PathBuilder`, scaling to
+  the room it is given, taking all three colours from the theme and spreading
+  its body parts over any budget — which is what unblocked item 4. The
+  trade-off was real: it retired the bundled artwork.
+- **7. Keyboard hints.** A strip along the bottom of the window lists each
+  shortcut beside what it does and greys the ones the game would refuse, and
+  the toolbar's tooltips carry the same chip. Both read the binding out of the
+  keymap rather than repeating it, so each chord spells itself the way the
+  platform does — `Ctrl+H` here, `⌃H` on macOS. See [Controls](#controls).
+- **8. Persist settings.** The theme, the window geometry and the chosen
+  difficulty are written to a JSON file in the platform's config directory and
+  restored at startup, and item 2 added the lifetime stats to the same file.
+  The match's own score is still the one thing not kept: it belongs to the
+  match and dies with it. See [Settings](#settings).
+- **9. Make the UI testable.** The helpers that only ever read the game — the
+  title-bar subtitle, the key colours, the guess count, the Hint tooltip and
+  the end-of-match line — are free functions over a `&Game` (and a `&Session`)
+  rather than `&self` methods on the view, which is what had made them
+  untestable. `&self` is the signature to avoid in that file.
+- **10. Try gpui-kit's `Modal` and `Dialog`.** `Reset stats` was the proving
+  ground, and the verdict was that they are worth using: an `AlertDialog`
+  takes both themes from `cx.theme()`, Escape cancels and Enter confirms with
+  no bindings of our own, Tab cycles inside it and the backdrop blocks the
+  mouse. Two things it does not do for you are written up in `CLAUDE.md`:
+  `Root` does not paint the dialog layer, and that layer sits inside the
+  window's key context, so a letter typed at a dialog is guessed on the board
+  behind it unless it is guarded. Its backdrop dim and its placement were the
+  two things worth overriding. Which *other* moments deserve one is item 12.
 
 **Not planned:** networked multiplayer — the original's external layer is the one
 thing the port deliberately dropped, and this would only bring it back — fetching
