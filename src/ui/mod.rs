@@ -66,6 +66,10 @@ const FILE_ERROR: &str = "Sorry, we couldnt read in your file.";
 /// What the status line says when there is nothing else to report.
 const IDLE_HINT: &str = "Type a letter, or click one above.";
 
+/// What the title bar says instead of a difficulty when a word list of your
+/// own is in play — the one state where [`Game::difficulty`] is `None`.
+const CUSTOM_LIST_SUBTITLE: &str = "Custom word list";
+
 /// What the Hint button promises, and the two reasons it can be off.
 ///
 /// The price is in the tooltip rather than behind the click because it is a
@@ -588,21 +592,25 @@ fn shortcut_kbd(shortcut: Shortcut, window: &Window) -> Option<Kbd> {
 ///
 /// Named `Notice` rather than `Alert` because gpui-kit ships an `Alert`
 /// component, which the result panel below uses.
-#[derive(Debug, Clone)]
+///
+/// Its text is a plain `String` rather than a `SharedString` so that the
+/// helpers which build one stay testable: a test that reaches them constructs
+/// no GPUI type, which is the rule the whole test module keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Notice {
-    text: SharedString,
+    text: String,
     good: bool,
 }
 
 impl Notice {
-    fn good(text: impl Into<SharedString>) -> Self {
+    fn good(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             good: true,
         }
     }
 
-    fn bad(text: impl Into<SharedString>) -> Self {
+    fn bad(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             good: false,
@@ -621,6 +629,83 @@ enum KeyState {
     Wrong,
     /// The game is over, so this key is out of play.
     OutOfPlay,
+}
+
+/// What the title bar shows beside the wordmark.
+fn subtitle(game: &Game) -> &'static str {
+    match game.difficulty() {
+        Some(difficulty) => difficulty.label(),
+        None => CUSTOM_LIST_SUBTITLE,
+    }
+}
+
+/// How many guesses have landed this game.
+///
+/// Element ids that carry this number mount fresh on every accepted guess,
+/// which is what lets a one-shot animation play again instead of once at
+/// mount — `with_animation` stamps its start time only when its element
+/// state is missing (`gpui-pre-0.3.3/src/elements/animation.rs:400-405`).
+/// A hint counts, because a hint puts a letter into the same set.
+fn guess_count(game: &Game) -> usize {
+    game.guessed_letters().len()
+}
+
+/// How the key for `letter` should be drawn right now.
+fn key_state(game: &Game, letter: char) -> KeyState {
+    if !game.guessed_letters().contains(&letter) {
+        return if game.is_game_over() {
+            KeyState::OutOfPlay
+        } else {
+            KeyState::Available
+        };
+    }
+    if game.word().contains(letter) {
+        KeyState::Correct
+    } else {
+        KeyState::Wrong
+    }
+}
+
+/// What the Hint button says it will do, or why it will not.
+///
+/// The disabled tooltip is the whole reason the button stays on screen
+/// greyed out instead of disappearing: "it would cost your last guess" is
+/// a rule worth learning, and a button that vanishes teaches nothing.
+fn hint_tooltip(game: &Game) -> &'static str {
+    if game.can_hint() {
+        HINT_TOOLTIP
+    } else if game.is_game_over() {
+        HINT_TOOLTIP_OVER
+    } else {
+        HINT_TOOLTIP_LAST_GUESS
+    }
+}
+
+/// The end-of-match line, or `None` while the match is still running.
+///
+/// Derived on every render rather than stored beside the per-game `notice`,
+/// so it cannot drift out of sync with the score it quotes.
+///
+/// The score it quotes is the match's own points, which is why this needs the
+/// [`Session`] as well as the [`Game`]: `words_won` and `words_lost` are
+/// per-match counters on the game, but the points are not kept there at all.
+fn match_summary(game: &Game, session: &Session) -> Option<Notice> {
+    let outcome = game.match_outcome()?;
+    let wins = game.words_won();
+    let total = wins + game.words_lost();
+    let scored = points(session.match_points());
+
+    Some(match outcome {
+        MatchOutcome::Win => Notice::good(format!(
+            "Good job, you got {wins} out of {total} for {scored}"
+        )),
+        MatchOutcome::Loss => Notice::bad(format!(
+            "Nice try, you only got {wins} out of {total} for {scored}"
+        )),
+        MatchOutcome::Tie => Notice::good(format!(
+            "A tie, not bad, you got {wins} out of {total} for {scored}"
+        )),
+    })
 }
 
 /// The panel surface every card in the window is drawn on.
@@ -656,7 +741,7 @@ pub struct HangmanView {
     game: Game,
     /// The most recent per-game message, or `None` for the original's idle
     /// blank line. The end-of-match message is derived on the fly instead, in
-    /// [`HangmanView::match_summary`].
+    /// [`match_summary`].
     notice: Option<Notice>,
     /// The letter of the last guess that actually landed — a correct or a
     /// wrong one, never a duplicate or an invalid character. It is what tells
@@ -1105,78 +1190,6 @@ impl HangmanView {
         }
     }
 
-    // -------------------------------------------------------------- derived
-
-    /// The end-of-match message, derived rather than stored so it cannot drift
-    /// out of sync with the score.
-    fn match_summary(&self) -> Option<Notice> {
-        let outcome = self.game.match_outcome()?;
-        let wins = self.game.words_won();
-        let total = wins + self.game.words_lost();
-        let scored = points(self.session.match_points());
-
-        Some(match outcome {
-            MatchOutcome::Win => Notice::good(format!(
-                "Good job, you got {wins} out of {total} for {scored}"
-            )),
-            MatchOutcome::Loss => Notice::bad(format!(
-                "Nice try, you only got {wins} out of {total} for {scored}"
-            )),
-            MatchOutcome::Tie => Notice::good(format!(
-                "A tie, not bad, you got {wins} out of {total} for {scored}"
-            )),
-        })
-    }
-
-    /// What the Hint button says it will do, or why it will not.
-    ///
-    /// The disabled tooltip is the whole reason the button stays on screen
-    /// greyed out instead of disappearing: "it would cost your last guess" is
-    /// a rule worth learning, and a button that vanishes teaches nothing.
-    fn hint_tooltip(&self) -> &'static str {
-        if self.game.can_hint() {
-            HINT_TOOLTIP
-        } else if self.game.is_game_over() {
-            HINT_TOOLTIP_OVER
-        } else {
-            HINT_TOOLTIP_LAST_GUESS
-        }
-    }
-
-    /// What the title bar shows beside the wordmark.
-    fn subtitle(&self) -> SharedString {
-        match self.game.difficulty() {
-            Some(difficulty) => difficulty.label().into(),
-            None => "Custom word list".into(),
-        }
-    }
-
-    /// How many guesses have landed this game.
-    ///
-    /// Element ids that carry this number mount fresh on every accepted guess,
-    /// which is what lets a one-shot animation play again instead of once at
-    /// mount — `with_animation` stamps its start time only when its element
-    /// state is missing (`gpui-pre-0.3.3/src/elements/animation.rs:400-405`).
-    fn guess_count(&self) -> usize {
-        self.game.guessed_letters().len()
-    }
-
-    /// How the key for `letter` should be drawn right now.
-    fn key_state(&self, letter: char) -> KeyState {
-        if !self.game.guessed_letters().contains(&letter) {
-            return if self.game.is_game_over() {
-                KeyState::OutOfPlay
-            } else {
-                KeyState::Available
-            };
-        }
-        if self.game.word().contains(letter) {
-            KeyState::Correct
-        } else {
-            KeyState::Wrong
-        }
-    }
-
     // ------------------------------------------------------------- rendering
 
     fn render_title_bar(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -1200,7 +1213,7 @@ impl HangmanView {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(self.subtitle()),
+                            .child(subtitle(&self.game)),
                     ),
             )
             .child(
@@ -1294,7 +1307,7 @@ impl HangmanView {
                             .icon(IconName::Eye)
                             .label("Hint")
                             .disabled(!self.game.can_hint())
-                            .tooltip_with_action(self.hint_tooltip(), &Hint, Some(KEY_CONTEXT))
+                            .tooltip_with_action(hint_tooltip(&self.game), &Hint, Some(KEY_CONTEXT))
                             .on_click(cx.listener(|this, _, _, cx| this.hint(cx))),
                     )
                     .child(
@@ -1641,7 +1654,10 @@ impl HangmanView {
                 // guess count so a later guess cannot inherit its state.
                 glyph
                     .with_animation(
-                        ElementId::named_usize(format!("word-guess-{index}"), self.guess_count()),
+                        ElementId::named_usize(
+                            format!("word-guess-{index}"),
+                            guess_count(&self.game),
+                        ),
                         Animation::new(GUESS_REVEAL.span(ordinal)),
                         move |this, delta| GUESS_REVEAL.draw(this, ordinal, delta),
                     )
@@ -1733,7 +1749,7 @@ impl HangmanView {
     /// `ButtonVariant::Custom`, whose colours the animator can rebuild every
     /// frame.
     fn render_key(&self, letter: char, cx: &Context<Self>) -> impl IntoElement {
-        let state = self.key_state(letter);
+        let state = key_state(&self.game, letter);
         let id = SharedString::from(format!("letter-{letter}"));
 
         let button = Button::new(id)
@@ -1787,7 +1803,7 @@ impl HangmanView {
                 // pulse carries the wrong-guess count: with a fixed id this
                 // would play once at mount and every later key would inherit
                 // the finished state.
-                ElementId::named_usize(format!("key-settle-{letter}"), self.guess_count()),
+                ElementId::named_usize(format!("key-settle-{letter}"), guess_count(&self.game)),
                 Animation::new(KEY_SETTLE).with_easing(ease_in_out),
                 move |button, delta| {
                     if delta >= 1. {
@@ -1892,12 +1908,12 @@ impl HangmanView {
         // `notice` already holds the original's wording, including the
         // separate line for giving up.
         let headline: SharedString = match self.notice.clone() {
-            Some(notice) => notice.text,
+            Some(notice) => notice.text.into(),
             None if won => GAME_WON.into(),
             None => GAME_LOST.into(),
         };
         let answer = format!("The word was {}", self.game.word());
-        let summary = self.match_summary();
+        let summary = match_summary(&self.game, &self.session);
 
         let banner = if won {
             Alert::success("result", answer)
@@ -2195,10 +2211,13 @@ mod tests {
     // this module's `gpui_kit::*` glob — and with it gpui's own `test` macro,
     // which shadows the built-in attribute and blows the recursion limit.
     use super::{
-        DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, RESET_NOTHING, Shortcut, Stats,
-        dialog_top_margin, plural, points, reset_stats_summary, shortcut_legend,
+        CUSTOM_LIST_SUBTITLE, DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, HINT_TOOLTIP,
+        HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, RESET_NOTHING, Shortcut, Stats,
+        dialog_top_margin, guess_count, hint_tooltip, key_state, match_summary, plural, points,
+        reset_stats_summary, shortcut_legend, subtitle,
     };
-    use crate::game::{Difficulty, Game};
+    use crate::game::{Difficulty, Game, GameResult};
+    use crate::stats::Session;
 
     // `Stats` has a private field, so it is filled in rather than built from a
     // literal — which is the right shape for this anyway: only the four
@@ -2393,5 +2412,238 @@ mod tests {
         // dialog back to gpui-kit's own spot rather than off the top edge.
         assert_eq!(dialog_top_margin(0.), 0.);
         assert_eq!(dialog_top_margin(-10.), 0.);
+    }
+    // ------------------------------------------------------ the view's helpers
+    //
+    // Everything below goes through the five functions roadmap item 9 pulled
+    // off `HangmanView`. Each takes a `&Game` (and `match_summary` a
+    // `&Session`) and returns plain data, so the rules they carry can be
+    // checked without a window — the same shape `shortcut_legend` above
+    // already had.
+
+    /// Guess every letter of the word, which wins it.
+    fn win_the_word(game: &mut Game) {
+        for letter in game.word().chars().collect::<Vec<_>>() {
+            if !game.is_game_over() {
+                game.guess(letter);
+            }
+        }
+        assert!(game.is_won(), "guessing every letter should win the word");
+    }
+
+    /// A two-word list of our own, so a whole match is three lines long.
+    fn two_word_game() -> Game {
+        Game::from_words(vec!["ALPHA".into(), "OMEGA".into()])
+            .expect("two words is not an empty list")
+    }
+
+    #[test]
+    fn the_subtitle_names_the_difficulty_being_played() {
+        for difficulty in Difficulty::ALL {
+            let game = Game::new(difficulty);
+
+            assert_eq!(subtitle(&game), difficulty.label());
+        }
+    }
+
+    #[test]
+    fn a_list_of_your_own_has_no_difficulty_to_name() {
+        // `Game::difficulty` is `None` for exactly one reason, so the title
+        // bar says which state it is in rather than going blank.
+        assert_eq!(subtitle(&two_word_game()), CUSTOM_LIST_SUBTITLE);
+    }
+
+    #[test]
+    fn the_guess_count_moves_on_every_accepted_guess() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        assert_eq!(guess_count(&game), 0);
+
+        guess_wrong(&mut game);
+        assert_eq!(guess_count(&game), 1);
+
+        guess_wrong(&mut game);
+        assert_eq!(guess_count(&game), 2);
+    }
+
+    #[test]
+    fn a_repeated_letter_does_not_move_the_guess_count() {
+        // The count is what animation ids are keyed on: it has to change when
+        // something happened and stay put when nothing did, or a one-shot
+        // animation replays on a guess the game ignored.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        let letter = game.available_letters()[0];
+
+        game.guess(letter);
+        let after_first = guess_count(&game);
+        game.guess(letter);
+
+        assert_eq!(guess_count(&game), after_first);
+    }
+
+    #[test]
+    fn a_hint_moves_the_guess_count_too() {
+        // A hint puts its letter into the same set, so the cells it turns
+        // over are animated by the same id bump an ordinary guess gets.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        let before = guess_count(&game);
+
+        game.hint();
+
+        assert_eq!(guess_count(&game), before + 1);
+    }
+
+    #[test]
+    fn an_unguessed_key_is_available_while_the_word_is_live() {
+        let game = Game::with_seed(Difficulty::Easy, 7);
+        let letter = game.available_letters()[0];
+
+        assert_eq!(key_state(&game, letter), KeyState::Available);
+    }
+
+    #[test]
+    fn a_guessed_key_says_whether_it_was_in_the_word() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        let right = game.word().chars().next().expect("words are not empty");
+        game.guess(right);
+        guess_wrong(&mut game);
+
+        let wrong = *game
+            .guessed_letters()
+            .iter()
+            .find(|letter| !game.word().contains(**letter))
+            .expect("guess_wrong just played one");
+
+        assert_eq!(key_state(&game, right), KeyState::Correct);
+        assert_eq!(key_state(&game, wrong), KeyState::Wrong);
+    }
+
+    #[test]
+    fn the_keys_never_played_go_out_of_play_when_the_word_ends() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        let untouched = game.available_letters()[0];
+        lose_the_word(&mut game);
+
+        assert_eq!(key_state(&game, untouched), KeyState::OutOfPlay);
+    }
+
+    #[test]
+    fn a_finished_word_still_shows_what_each_guess_earned() {
+        // Only the keys that were never played go grey: the record of what
+        // you did guess is the half of the keyboard worth reading afterwards.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        let right = game.word().chars().next().expect("words are not empty");
+        game.guess(right);
+        lose_the_word(&mut game);
+
+        assert_eq!(key_state(&game, right), KeyState::Correct);
+    }
+
+    #[test]
+    fn the_hint_tooltip_offers_a_hint_while_one_is_affordable() {
+        let game = Game::with_seed(Difficulty::Easy, 7);
+
+        assert_eq!(hint_tooltip(&game), HINT_TOOLTIP);
+    }
+
+    #[test]
+    fn the_hint_tooltip_explains_the_last_guess_it_will_not_spend() {
+        let mut game = Game::with_seed(Difficulty::Insane, 7);
+        while game.remaining_guesses() > 1 {
+            guess_wrong(&mut game);
+        }
+
+        // Still playable, just not hintable — which is the one case the
+        // greyed-out button has to explain rather than simply disappear.
+        assert!(!game.is_game_over());
+        assert_eq!(hint_tooltip(&game), HINT_TOOLTIP_LAST_GUESS);
+    }
+
+    #[test]
+    fn the_hint_tooltip_says_so_once_the_word_is_finished() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        lose_the_word(&mut game);
+
+        assert_eq!(hint_tooltip(&game), HINT_TOOLTIP_OVER);
+    }
+
+    #[test]
+    fn there_is_no_match_summary_while_the_match_is_running() {
+        let mut game = two_word_game();
+        let session = Session::new(Stats::default());
+        assert_eq!(match_summary(&game, &session), None);
+
+        // One word down, one to go: still nothing to summarise.
+        lose_the_word(&mut game);
+        assert!(game.new_game());
+        assert_eq!(match_summary(&game, &session), None);
+    }
+
+    #[test]
+    fn a_won_match_is_good_news_and_counts_the_words() {
+        let mut game = two_word_game();
+        win_the_word(&mut game);
+        assert!(game.new_game());
+        win_the_word(&mut game);
+
+        let summary =
+            match_summary(&game, &Session::new(Stats::default())).expect("the list is played out");
+
+        assert!(summary.good);
+        assert_eq!(summary.text, "Good job, you got 2 out of 2 for 0 points");
+    }
+
+    #[test]
+    fn a_lost_match_is_bad_news() {
+        let mut game = two_word_game();
+        lose_the_word(&mut game);
+        assert!(game.new_game());
+        lose_the_word(&mut game);
+
+        let summary =
+            match_summary(&game, &Session::new(Stats::default())).expect("the list is played out");
+
+        assert!(!summary.good);
+        assert_eq!(
+            summary.text,
+            "Nice try, you only got 0 out of 2 for 0 points"
+        );
+    }
+
+    #[test]
+    fn an_even_match_is_a_tie_and_still_reads_as_good_news() {
+        let mut game = two_word_game();
+        win_the_word(&mut game);
+        assert!(game.new_game());
+        lose_the_word(&mut game);
+
+        let summary =
+            match_summary(&game, &Session::new(Stats::default())).expect("the list is played out");
+
+        assert!(summary.good);
+        assert_eq!(
+            summary.text,
+            "A tie, not bad, you got 1 out of 2 for 0 points"
+        );
+    }
+
+    #[test]
+    fn the_match_summary_quotes_the_match_score_not_the_lifetime_one() {
+        // The points in the line are the session's match total, which is why
+        // this helper needs the `Session` at all: `Game` keeps no points.
+        let mut game = two_word_game();
+        let mut session = Session::new(stats(9210, 31, 9, 11));
+        win_the_word(&mut game);
+        let earned =
+            session.record_word(game.difficulty(), GameResult::Won, game.remaining_guesses());
+        assert!(game.new_game());
+        win_the_word(&mut game);
+
+        let summary = match_summary(&game, &session).expect("the list is played out");
+
+        assert!(
+            summary.text.ends_with(&format!("for {earned} points")),
+            "the lifetime 9210 must not leak into the match line: {}",
+            summary.text,
+        );
     }
 }

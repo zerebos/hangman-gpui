@@ -41,16 +41,23 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 157 tests and finishes in under a second, because not one of them
+`cargo test` is 174 tests and finishes in under a second, because not one of them
 constructs a GPUI type, so nothing there opens a window. For the four GPUI-free
 modules that is guaranteed by the file: there is no gpui in them to construct.
 `src/ui/mod.rs` is the exception and the discipline there is a choice, not a
 guarantee — the view and all its gpui imports are in the same file as the tests,
-and its thirteen only reach pure helpers (`shortcut_legend` from item 7, and
-`plural` / `points` / `reset_stats_summary` / `dialog_top_margin` from item 10)
-that take plain data and return plain data. Anything added to that module has to
-keep to the same rule by hand, importing what it tests by name rather than with a
-`use super::*` — see gotcha 10 for why that matters.
+and its thirty only reach pure helpers that take plain data and return plain
+data: `shortcut_legend` from item 7, `plural` / `points` /
+`reset_stats_summary` / `dialog_top_margin` from item 10, and `subtitle` /
+`guess_count` / `key_state` / `hint_tooltip` / `match_summary` from item 9.
+Anything added to that module has to keep to the same rule by hand, importing
+what it tests by name rather than with a `use super::*` — see gotcha 10 for why
+that matters.
+
+That rule is also why `Notice`, the view's one feedback-line type, holds a
+plain `String` rather than a `SharedString`: `match_summary` returns one, so a
+`SharedString` in the field would have made the helper untestable under the
+rule for no gain — the two render sites convert on the spot instead.
 
 ## Layout
 
@@ -91,11 +98,13 @@ keep to the same rule by hand, importing what it tests by name rather than with 
   charge, a hint can never be the guess that *loses* a word, so `hint` checks
   the win and never the loss.
 - `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the element that
-  paints the gallows. The view is not testable, but the rule behind the
-  keyboard legend along the window's bottom edge is: `shortcut_legend` takes a
-  `&Game` and returns plain data, so its 5 in-file tests build no GPUI type and
-  open no window, exactly like the other four modules'. Keep that shape for
-  anything else pulled out of the view (roadmap item 9). Neither the legend nor
+  paints the gallows. `HangmanView` itself is not testable, but the rules it
+  reads off the game are: every helper that needed nothing but a `&Game` (and,
+  for `match_summary`, a `&Session`) is a free function above the view rather
+  than a `&self` method on it, so the in-file tests build no GPUI type and open
+  no window, exactly like the other four modules'. That is the shape anything
+  pulled out of the view has to keep — `&self` is the signature to avoid,
+  because it drags the whole view into the test. Neither the legend nor
   any toolbar tooltip spells a chord out: `Kbd::binding_for_action` and
   `Button::tooltip_with_action` read it from the keymap `main.rs` registers, so
   rebinding a shortcut there updates every place it is shown. The one
