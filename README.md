@@ -357,8 +357,8 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. Twelve ideas were agreed for where it goes next; nine have
-shipped and three are open. The numbering is the order they were argued about
+mirroring it. Thirteen ideas have been agreed for where it goes next; nine have
+shipped and four are open. The numbering is the order they were argued about
 rather than any committed order, and it stays as it is even as items land —
 commit messages, pull requests and `CLAUDE.md` all cite these by number.
 
@@ -402,6 +402,31 @@ commit messages, pull requests and `CLAUDE.md` all cite these by number.
   whichever way the other three go. Closing the window mid-word is
   deliberately not on this list: item 11 closes that hole by remembering the
   word instead of asking about it, and the two are alternatives.
+- **13. Make the abandon rule testable.** Item 9 pulled every helper that only
+  *reads* the game out of the view, and the abandon rule is what it could not
+  reach: the two rules `CLAUDE.md` states about it are sequencing rather than
+  arithmetic, so no function over a `&Game` can express either. The first is
+  that the loss belongs to the difficulty the word came from — by the time it
+  is booked, the game has already been reset and is reporting the difficulty
+  switched *to*, so the word and its difficulty have to be read before the
+  throw. The second is that `load_word_list` charges only on its success
+  branch, since a file that will not parse leaves the word on the board
+  untouched. Both are properties of the *order* of statements inside
+  `set_difficulty` and `load_word_list`, and reversing either is a one-line
+  edit that reads fine and costs a player a word.
+  `word_being_abandoned` is covered as of item 9 and answers the "is there
+  anything to charge for, and whose is it" half, which leaves the charging
+  itself. The shape that would close it is to have something decide what an
+  abandonment *costs* from the state before the reset and hand it back as
+  plain data — a charge to apply, or nothing — leaving the view to apply it
+  and say so. A test could then drive the three cases that matter and never
+  build a view: a part-played word walked away from is charged to its own
+  difficulty, an untouched one is charged nothing, and a word list that fails
+  to parse is charged nothing even though the click that failed looked exactly
+  like the one that succeeds. This is worth doing on its own account: the
+  abandon rule is the one piece of this game that has already come close to
+  shipping wrong, when the warning tooltip that announces it nearly
+  interpolated the answer into itself during play.
 
 ### Shipped
 
@@ -441,10 +466,12 @@ commit messages, pull requests and `CLAUDE.md` all cite these by number.
   The match's own score is still the one thing not kept: it belongs to the
   match and dies with it. See [Settings](#settings).
 - **9. Make the UI testable.** The helpers that only ever read the game — the
-  title-bar subtitle, the key colours, the guess count, the Hint tooltip and
-  the end-of-match line — are free functions over a `&Game` (and a `&Session`)
-  rather than `&self` methods on the view, which is what had made them
-  untestable. `&self` is the signature to avoid in that file.
+  title-bar subtitle, the key colours, the guess count, the Hint tooltip, the
+  end-of-match line and the abandon rule's "is this word worth charging for" —
+  are free functions over a `&Game` (and a `&Session`) rather than `&self`
+  methods on the view, which is what had made them untestable. `&self` is the
+  signature to avoid in that file. What it could not reach — the *order* the
+  abandon charge has to happen in — is item 13.
 - **10. Try gpui-kit's `Modal` and `Dialog`.** `Reset stats` was the proving
   ground, and the verdict was that they are worth using: an `AlertDialog`
   takes both themes from `cx.theme()`, Escape cancels and Enter confirms with
