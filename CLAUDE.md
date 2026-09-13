@@ -63,11 +63,15 @@ arithmetic newtypes in a trenchcoat, constructing one starts nothing and the
 window geometry it carries is the sort of thing a transposed field breaks in a
 way review does not catch. A `Window`, an `App`, a `Context` or an element is
 the opposite — needing any of those is the signal that the logic wants pulling
-out into a free function instead. If a helper's return type is the only thing
-standing between it and a test, change the return type: `Notice`, the view's
-one feedback-line type, holds a plain `String` rather than a `SharedString` for
-exactly that reason, since `match_summary` returns one and the two render sites
-can convert on the spot.
+out into a free function instead. `SharedString` falls on the harmless side for
+the same reason `Bounds` does — it is a `SmolStr` newtype — which is why
+`Notice`, the view's one feedback-line type, still holds one even though
+`match_summary` builds it and the tests read it. Changing that field to a plain
+`String` bought the tests nothing and cost an allocation on every frame, since
+both render sites clone the notice out of the view to read it; cloning a
+`SmolStr` is an `Arc` bump instead. If a type really is the only thing standing
+between a helper and a test, ask whether it needs a window before assuming it
+does.
 
 ## Layout
 

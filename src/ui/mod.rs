@@ -593,24 +593,27 @@ fn shortcut_kbd(shortcut: Shortcut, window: &Window) -> Option<Kbd> {
 /// Named `Notice` rather than `Alert` because gpui-kit ships an `Alert`
 /// component, which the result panel below uses.
 ///
-/// Its text is a plain `String` rather than a `SharedString` so that the
-/// helpers which build one stay testable: a test that reaches them constructs
-/// no GPUI type, which is the rule the whole test module keeps.
+/// Its text stays a `SharedString` even though [`match_summary`] builds one and
+/// the tests read it. That is the same call as `to_rect` / `to_bounds`: a
+/// `SharedString` is a `SmolStr` newtype, so a test constructing one opens no
+/// window and starts nothing, while a plain `String` here would allocate on
+/// every frame — both render sites clone this out of the view to read it, and
+/// cloning a `SmolStr` is an `Arc` bump or a 22-byte copy instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Notice {
-    text: String,
+    text: SharedString,
     good: bool,
 }
 
 impl Notice {
-    fn good(text: impl Into<String>) -> Self {
+    fn good(text: impl Into<SharedString>) -> Self {
         Self {
             text: text.into(),
             good: true,
         }
     }
 
-    fn bad(text: impl Into<String>) -> Self {
+    fn bad(text: impl Into<SharedString>) -> Self {
         Self {
             text: text.into(),
             good: false,
@@ -1907,7 +1910,7 @@ impl HangmanView {
         // `notice` already holds the original's wording, including the
         // separate line for giving up.
         let headline: SharedString = match self.notice.clone() {
-            Some(notice) => notice.text.into(),
+            Some(notice) => notice.text,
             None if won => GAME_WON.into(),
             None => GAME_LOST.into(),
         };
@@ -2696,9 +2699,12 @@ mod tests {
             "the shake threw the row further than SHAKE_DISTANCE",
         );
         // Without this the previous test would pass for a function that
-        // returned zero throughout, which is not a shake.
-        assert!(samples.iter().any(|offset| *offset > 1.));
-        assert!(samples.iter().any(|offset| *offset < -1.));
+        // returned zero throughout, which is not a shake. The threshold is a
+        // share of `SHAKE_DISTANCE` rather than a literal, so retuning the
+        // distance — including below 1px — cannot turn a real shake red.
+        let visible = SHAKE_DISTANCE / 4.;
+        assert!(samples.iter().any(|offset| *offset > visible));
+        assert!(samples.iter().any(|offset| *offset < -visible));
     }
 
     #[test]
