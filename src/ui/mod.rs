@@ -681,6 +681,18 @@ fn hint_tooltip(game: &Game) -> &'static str {
     }
 }
 
+/// The word that is about to be thrown away, if throwing it away costs
+/// anything: its text, and the difficulty it belongs to.
+///
+/// Both have to be read *before* the throw, because dealing a new pool
+/// takes the word with it and may change the difficulty out from under the
+/// loss — which belongs to the list the word came from, not the one being
+/// switched to.
+fn word_being_abandoned(game: &Game) -> Option<(String, Option<Difficulty>)> {
+    game.has_word_to_lose()
+        .then(|| (game.word().to_string(), game.difficulty()))
+}
+
 /// The end-of-match line, or `None` while the match is still running.
 ///
 /// Derived on every render rather than stored beside the per-game `notice`,
@@ -1007,19 +1019,6 @@ impl HangmanView {
         }
     }
 
-    /// The word that is about to be thrown away, if throwing it away costs
-    /// anything: its text, and the difficulty it belongs to.
-    ///
-    /// Both have to be read *before* the throw, because dealing a new pool
-    /// takes the word with it and may change the difficulty out from under the
-    /// loss — which belongs to the list the word came from, not the one being
-    /// switched to.
-    fn word_being_abandoned(&self) -> Option<(String, Option<Difficulty>)> {
-        self.game
-            .has_word_to_lose()
-            .then(|| (self.game.word().to_string(), self.game.difficulty()))
-    }
-
     /// Charge a loss for a word walked away from, and say so.
     ///
     /// This is [`HangmanView::record`] for the abandon case, with `difficulty`
@@ -1046,7 +1045,7 @@ impl HangmanView {
             return;
         }
         // Read before the switch deals a new pool and takes the word with it.
-        let abandoned = self.word_being_abandoned();
+        let abandoned = word_being_abandoned(&self.game);
 
         self.game.set_difficulty(difficulty);
         // A fresh match, so the match score starts again from zero. The streak
@@ -1135,7 +1134,7 @@ impl HangmanView {
         // Read before the load, for the same reason as in `set_difficulty` —
         // and only charged for on the success branch below, because a list that
         // turns out to be unreadable or empty leaves the current word alone.
-        let abandoned = self.word_being_abandoned();
+        let abandoned = word_being_abandoned(&self.game);
 
         let loaded = contents.ok().and_then(|text| {
             let words = text.lines().map(str::to_owned).collect();
@@ -2215,9 +2214,10 @@ mod tests {
         HINT_TOOLTIP, HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, RESET_NOTHING,
         SHAKE_DISTANCE, Shortcut, Stats, WIN_REVEAL, dialog_top_margin, guess_count, hint_tooltip,
         key_state, match_summary, percent, plural, points, reset_stats_summary, shake_offset,
-        shortcut_legend, subtitle,
+        shortcut_legend, subtitle, to_bounds, to_rect, word_being_abandoned,
     };
     use crate::game::{Difficulty, Game, GameResult};
+    use crate::settings::Rect;
     use crate::stats::Session;
 
     // `Stats` has a private field, so it is filled in rather than built from a
@@ -2749,5 +2749,108 @@ mod tests {
     fn a_reveal_runs_longer_the_more_letters_it_has_to_get_through() {
         assert!(WIN_REVEAL.span(5) > WIN_REVEAL.span(0));
         assert!(GUESS_REVEAL.span(1) > GUESS_REVEAL.span(0));
+    }
+    // -------------------------------------------------- the abandon rule's half
+    //
+    // `word_being_abandoned` is the same shape as the five above and was missed
+    // in the first sweep, because it sits among the view's mutators rather than
+    // with the other read-only helpers. It answers one question — is there a
+    // word here whose loss has to be paid for, and whose loss is it — and the
+    // two call sites that reset the game out from under it both ask it first.
+
+    #[test]
+    fn an_untouched_word_costs_nothing_to_walk_away_from() {
+        // Dealt and not played: switching difficulty here is free, and has to
+        // be, or opening the app and changing your mind is a loss.
+        let game = Game::with_seed(Difficulty::Easy, 7);
+
+        assert_eq!(word_being_abandoned(&game), None);
+    }
+
+    #[test]
+    fn one_guess_is_enough_to_make_a_word_worth_charging_for() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        let word = game.word().to_string();
+        guess_wrong(&mut game);
+
+        assert_eq!(
+            word_being_abandoned(&game),
+            Some((word, Some(Difficulty::Easy))),
+        );
+    }
+
+    #[test]
+    fn a_hint_alone_also_makes_a_word_worth_charging_for() {
+        // `hint` puts its letter into the same set `guess` does, which is what
+        // makes this true — a player who spends a hint and then switches away
+        // has played the word as surely as one who guessed.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        game.hint();
+
+        assert!(word_being_abandoned(&game).is_some());
+    }
+
+    #[test]
+    fn an_abandoned_word_reports_the_difficulty_it_came_from() {
+        // The whole reason this returns the difficulty rather than letting the
+        // caller read it back: by the time the loss is booked the game has
+        // been reset and is reporting the difficulty switched *to*.
+        for difficulty in Difficulty::ALL {
+            let mut game = Game::with_seed(difficulty, 7);
+            guess_wrong(&mut game);
+
+            let (_, from) = word_being_abandoned(&game).expect("the word has a guess on it");
+
+            assert_eq!(from, Some(difficulty));
+        }
+    }
+
+    #[test]
+    fn a_word_from_a_list_of_your_own_has_no_difficulty_to_charge() {
+        let mut game = two_word_game();
+        guess_wrong(&mut game);
+
+        let (_, from) = word_being_abandoned(&game).expect("the word has a guess on it");
+
+        assert_eq!(from, None);
+    }
+
+    // ------------------------------------------------------- the window frame
+    //
+    // These two build a `Bounds<Pixels>`, which is a gpui type — but one made
+    // of arithmetic newtypes, with no window, no `App` and no platform behind
+    // it. See the note in `CLAUDE.md` on why the rule is about what a test
+    // *needs* rather than about which crate a type came from.
+
+    #[test]
+    fn a_window_frame_survives_the_trip_to_the_settings_file() {
+        let rect = Rect::new(120., 64., 1000., 800.);
+
+        let restored = to_rect(to_bounds(rect));
+
+        assert_eq!(restored.x, rect.x);
+        assert_eq!(restored.y, rect.y);
+        assert_eq!(restored.width, rect.width);
+        assert_eq!(restored.height, rect.height);
+    }
+
+    #[test]
+    fn a_window_frame_keeps_each_number_in_its_own_field() {
+        // The round trip above would pass just as happily if both directions
+        // swapped x for y, or width for height, so it is checked against
+        // literals here: four distinct numbers, each asserted where it belongs.
+        // Getting this wrong reopens the window somewhere other than where it
+        // was closed, which is the sort of thing a reader forgives as "gpui
+        // being odd" rather than reading as a bug.
+        let bounds = to_bounds(Rect::new(1., 2., 3., 4.));
+
+        assert_eq!(bounds.origin.x.as_f32(), 1.);
+        assert_eq!(bounds.origin.y.as_f32(), 2.);
+        assert_eq!(bounds.size.width.as_f32(), 3.);
+        assert_eq!(bounds.size.height.as_f32(), 4.);
+
+        let rect = to_rect(bounds);
+
+        assert_eq!((rect.x, rect.y, rect.width, rect.height), (1., 2., 3., 4.));
     }
 }

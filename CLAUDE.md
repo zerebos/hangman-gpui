@@ -41,24 +41,33 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 181 tests and finishes in under a second, because not one of them
-constructs a GPUI type, so nothing there opens a window. For the four GPUI-free
-modules that is guaranteed by the file: there is no gpui in them to construct.
-`src/ui/mod.rs` is the exception and the discipline there is a choice, not a
-guarantee — the view and all its gpui imports are in the same file as the tests,
-and its thirty-seven only reach pure helpers that take plain data and return plain
-data: `shortcut_legend` from item 7, `plural` / `points` /
+`cargo test` is 188 tests and finishes in under a second, because **not one of
+them opens a window, needs an `App`, or touches the platform.** For the four
+GPUI-free modules that is guaranteed by the file: there is no gpui in them at
+all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
+a guarantee — the view and all its gpui imports are in the same file as the
+tests, and its forty-four only reach free functions that take plain data and
+return plain data: `shortcut_legend` from item 7, `plural` / `points` /
 `reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
-`guess_count` / `key_state` / `hint_tooltip` / `match_summary` from item 9, and
-`percent` / `shake_offset` / `Reveal::progress` / `Reveal::span` alongside them.
+`guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
+`word_being_abandoned` from item 9, and `percent` / `shake_offset` /
+`Reveal::progress` / `Reveal::span` / `to_rect` / `to_bounds` alongside them.
 Anything added to that module has to keep to the same rule by hand, importing
 what it tests by name rather than with a `use super::*` — see gotcha 10 for why
 that matters.
 
-That rule is also why `Notice`, the view's one feedback-line type, holds a
-plain `String` rather than a `SharedString`: `match_summary` returns one, so a
-`SharedString` in the field would have made the helper untestable under the
-rule for no gain — the two render sites convert on the spot instead.
+**The rule is about what a test needs, not about which crate a type came
+from**, and that distinction is worth holding on to. `Bounds<Pixels>` is a gpui
+type, and `to_rect` / `to_bounds` are tested with real ones: it is four
+arithmetic newtypes in a trenchcoat, constructing one starts nothing and the
+window geometry it carries is the sort of thing a transposed field breaks in a
+way review does not catch. A `Window`, an `App`, a `Context` or an element is
+the opposite — needing any of those is the signal that the logic wants pulling
+out into a free function instead. If a helper's return type is the only thing
+standing between it and a test, change the return type: `Notice`, the view's
+one feedback-line type, holds a plain `String` rather than a `SharedString` for
+exactly that reason, since `match_summary` returns one and the two render sites
+can convert on the spot.
 
 ## Layout
 
