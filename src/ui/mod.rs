@@ -2223,6 +2223,13 @@ mod tests {
     use crate::settings::Rect;
     use crate::stats::Session;
 
+    /// How many cell indices the [`super::Reveal`] tests sweep. Both of them
+    /// claim something about *every* letter of a word, so the bound has to sit
+    /// past the longest row either reveal can be asked to animate — see
+    /// `every_letter_of_a_reveal_is_finished_when_the_animation_is` for why it
+    /// is a flat number rather than the longest bundled word.
+    const REVEAL_INDEX_SWEEP: usize = 40;
+
     // `Stats` has a private field, so it is filled in rather than built from a
     // literal — which is the right shape for this anyway: only the four
     // numbers the warning quotes matter here.
@@ -2720,8 +2727,15 @@ mod tests {
         // That is invisible as an opacity and it is not worth contorting the
         // arithmetic for, but it is worth someone knowing before they write
         // `assert_eq!(.., 1.)` and wonder why it fails.
+        //
+        // The bound is deliberately generous rather than derived from the
+        // bundled lists: `Sesquipedalianism` in `assets/words/insane.txt` is
+        // already 17 cells, a word list of your own has no length limit at
+        // all, and the rounding above is the one thing here that gets *worse*
+        // the further out the index goes. Forty is past anything a word row
+        // can show and the loop still costs nothing.
         for reveal in [WIN_REVEAL, GUESS_REVEAL] {
-            for index in 0..12 {
+            for index in 0..REVEAL_INDEX_SWEEP {
                 assert_eq!(reveal.progress(index, 0.), 0.);
                 assert!(
                     (reveal.progress(index, 1.) - 1.).abs() < 1e-5,
@@ -2738,14 +2752,16 @@ mod tests {
         // no further along than the one before it, and the first is strictly
         // ahead of the last. A `step` of zero would fade them all at once.
         for delta in [0.2, 0.4, 0.6, 0.8] {
-            let progress: Vec<f32> = (0..8).map(|i| WIN_REVEAL.progress(i, delta)).collect();
+            let progress: Vec<f32> = (0..REVEAL_INDEX_SWEEP)
+                .map(|i| WIN_REVEAL.progress(i, delta))
+                .collect();
 
             assert!(
                 progress.windows(2).all(|pair| pair[0] >= pair[1]),
                 "letters ran out of order at delta {delta}: {progress:?}",
             );
             assert!(
-                progress[0] > progress[7],
+                progress[0] > progress[REVEAL_INDEX_SWEEP - 1],
                 "nothing was staggered at {delta}"
             );
         }
