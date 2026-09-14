@@ -41,16 +41,37 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 157 tests and finishes in under a second, because not one of them
-constructs a GPUI type, so nothing there opens a window. For the four GPUI-free
-modules that is guaranteed by the file: there is no gpui in them to construct.
-`src/ui/mod.rs` is the exception and the discipline there is a choice, not a
-guarantee — the view and all its gpui imports are in the same file as the tests,
-and its thirteen only reach pure helpers (`shortcut_legend` from item 7, and
-`plural` / `points` / `reset_stats_summary` / `dialog_top_margin` from item 10)
-that take plain data and return plain data. Anything added to that module has to
-keep to the same rule by hand, importing what it tests by name rather than with a
-`use super::*` — see gotcha 10 for why that matters.
+`cargo test` is 188 tests and finishes in under a second, because **not one of
+them opens a window, needs an `App`, or touches the platform.** For the four
+GPUI-free modules that is guaranteed by the file: there is no gpui in them at
+all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
+a guarantee — the view and all its gpui imports are in the same file as the
+tests, and its forty-four only reach free functions that take plain data and
+return plain data: `shortcut_legend` from item 7, `plural` / `points` /
+`reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
+`guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
+`word_being_abandoned` from item 9, and `percent` / `shake_offset` /
+`Reveal::progress` / `Reveal::span` / `to_rect` / `to_bounds` alongside them.
+Anything added to that module has to keep to the same rule by hand, importing
+what it tests by name rather than with a `use super::*` — see gotcha 10 for why
+that matters.
+
+**The rule is about what a test needs, not about which crate a type came
+from**, and that distinction is worth holding on to. `Bounds<Pixels>` is a gpui
+type, and `to_rect` / `to_bounds` are tested with real ones: it is four
+arithmetic newtypes in a trenchcoat, constructing one starts nothing and the
+window geometry it carries is the sort of thing a transposed field breaks in a
+way review does not catch. A `Window`, an `App`, a `Context` or an element is
+the opposite — needing any of those is the signal that the logic wants pulling
+out into a free function instead. `SharedString` falls on the harmless side for
+the same reason `Bounds` does — it is a `SmolStr` newtype — which is why
+`Notice`, the view's one feedback-line type, still holds one even though
+`match_summary` builds it and the tests read it. Changing that field to a plain
+`String` bought the tests nothing and cost an allocation on every frame, since
+both render sites clone the notice out of the view to read it; cloning a
+`SmolStr` is an `Arc` bump instead. If a type really is the only thing standing
+between a helper and a test, ask whether it needs a window before assuming it
+does.
 
 ## Layout
 
@@ -91,11 +112,13 @@ keep to the same rule by hand, importing what it tests by name rather than with 
   charge, a hint can never be the guess that *loses* a word, so `hint` checks
   the win and never the loss.
 - `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the element that
-  paints the gallows. The view is not testable, but the rule behind the
-  keyboard legend along the window's bottom edge is: `shortcut_legend` takes a
-  `&Game` and returns plain data, so its 5 in-file tests build no GPUI type and
-  open no window, exactly like the other four modules'. Keep that shape for
-  anything else pulled out of the view (roadmap item 9). Neither the legend nor
+  paints the gallows. `HangmanView` itself is not testable, but the rules it
+  reads off the game are: every helper that needed nothing but a `&Game` (and,
+  for `match_summary`, a `&Session`) is a free function above the view rather
+  than a `&self` method on it, so the in-file tests build no GPUI type and open
+  no window, exactly like the other four modules'. That is the shape anything
+  pulled out of the view has to keep — `&self` is the signature to avoid,
+  because it drags the whole view into the test. Neither the legend nor
   any toolbar tooltip spells a chord out: `Kbd::binding_for_action` and
   `Button::tooltip_with_action` read it from the keymap `main.rs` registers, so
   rebinding a shortcut there updates every place it is shown. The one
