@@ -97,9 +97,13 @@ does.
   stray click on the selected pill cannot cost the word in hand. Once the match
   is over that click is the only way to replay the list, so it restarts as
   normal — don't collapse the two cases into one. The predicate behind that
-  `false` is `would_switch_to`, public because the view has to ask *before* it
-  acts: a switch throws the current word away, and `has_word_to_lose` decides
-  whether that word has to be paid for. Those two are the whole abandon rule —
+  `false` is `would_switch_to`, and `has_word_to_lose` decides whether the word
+  a switch throws away has to be paid for. Nothing outside this module calls
+  `would_switch_to` since item 13 — `switch_difficulty` builds its `Dealt` out
+  of `set_difficulty`'s own `bool` instead, so a charge cannot be handed back
+  for a switch that did not happen — but it stays public and named: it is the
+  rule the refusal is *about*, and asking it before acting is still the right
+  move for any caller that needs the answer without committing to the switch. Those two are the whole abandon rule —
   a word with a guess or a hint on it, walked away from by a difficulty switch
   or a new word list, is charged as a loss by the *view* (`record_abandoned`),
   because `game.rs` is being reset out from under it and has no stats to keep.

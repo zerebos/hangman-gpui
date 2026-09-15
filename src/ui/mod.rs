@@ -692,7 +692,7 @@ fn hint_tooltip(game: &Game) -> &'static str {
 /// it and say so — and so a test can drive the whole rule without building a
 /// view. The difficulty is the field that makes this a type rather than a
 /// `String`: it is the one a reset would change out from under the loss.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct AbandonCharge {
     word: String,
     difficulty: Option<Difficulty>,
@@ -704,7 +704,7 @@ struct AbandonCharge {
 /// click on the difficulty already in play must not cost the word in hand, and
 /// it means nothing at all happened — no fresh pool, no new match, nothing to
 /// save.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum SwitchOutcome {
     /// The difficulty asked for is the one in play and the match is still
     /// running, so the game was left exactly as it was.
@@ -714,7 +714,7 @@ enum SwitchOutcome {
 }
 
 /// What a word list picked from disk did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum LoadOutcome {
     /// The file read and parsed, and a fresh pool was dealt from it — at the
     /// cost of the word that was on the board.
@@ -748,15 +748,17 @@ fn word_being_abandoned(game: &Game) -> Option<AbandonCharge> {
 /// reports the difficulty switched **to** and the loss belongs to the one the
 /// word came from. Reversing the two lines still compiles, still reads fine,
 /// and books every abandoned word against the wrong list.
+///
+/// Whether the switch happens at all is [`Game::set_difficulty`]'s own answer
+/// rather than a second reading of [`Game::would_switch_to`] here: a click on
+/// the difficulty already in play must not cost the word in hand, and the only
+/// way to be sure a charge is never handed back for a switch that did not
+/// happen is to build `Dealt` out of the `true` that says it did.
 fn switch_difficulty(game: &mut Game, difficulty: Difficulty) -> SwitchOutcome {
-    // Ask first, because a click that changes nothing must not cost the word
-    // in hand — and because the answer is what decides whether there is a word
-    // to charge for at all.
-    if !game.would_switch_to(difficulty) {
+    let charge = word_being_abandoned(game);
+    if !game.set_difficulty(difficulty) {
         return SwitchOutcome::Refused;
     }
-    let charge = word_being_abandoned(game);
-    game.set_difficulty(difficulty);
     SwitchOutcome::Dealt(charge)
 }
 
@@ -1129,10 +1131,10 @@ impl HangmanView {
     fn set_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
         // The pills are a `ButtonGroup`, so the selected one is still a button
         // and clicking it still fires — and a click that changes nothing must
-        // not cost the word in hand. `switch_difficulty` is where that rule and
-        // the order the charge has to be read in both live. Once the match is
-        // over the same click does restart, which is the footer's "pick a
-        // difficulty to start a new match".
+        // not cost the word in hand, which is the `Refused` below. Once the
+        // match is over the same click does restart, which is the footer's
+        // "pick a difficulty to start a new match". `switch_difficulty` is
+        // where that rule and the order the charge has to be read in both live.
         let SwitchOutcome::Dealt(charge) = switch_difficulty(&mut self.game, difficulty) else {
             return;
         };
