@@ -41,17 +41,21 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 188 tests and finishes in under a second, because **not one of
+`cargo test` is 195 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the four
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
 a guarantee — the view and all its gpui imports are in the same file as the
-tests, and its forty-four only reach free functions that take plain data and
+tests, and its fifty-one only reach free functions that take plain data and
 return plain data: `shortcut_legend` from item 7, `plural` / `points` /
 `reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
 `guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
-`word_being_abandoned` from item 9, and `percent` / `shake_offset` /
-`Reveal::progress` / `Reveal::span` / `to_rect` / `to_bounds` alongside them.
+`word_being_abandoned` from item 9, `switch_difficulty` / `load_words` from
+item 13, and `percent` / `shake_offset` / `Reveal::progress` / `Reveal::span` /
+`to_rect` / `to_bounds` alongside them. The item 13 pair is the one that takes
+a `&mut Game` and changes it rather than only reading — which is still inside
+the rule, because the rule is about needing no window, no `App` and no
+platform, and a `Game` needs none of the three.
 Anything added to that module has to keep to the same rule by hand, importing
 what it tests by name rather than with a `use super::*` — see gotcha 10 for why
 that matters.
@@ -101,8 +105,14 @@ does.
   because `game.rs` is being reset out from under it and has no stats to keep.
   Read both before touching either call site: the loss belongs to the
   difficulty the word came from, so the word and its difficulty have to be
-  captured before the reset, and `load_word_list` must charge only on its
-  success branch, since a list that will not parse leaves the word alone.
+  captured before the reset, and the file path must charge only on its success
+  branch, since a list that will not parse leaves the word alone. Both of those
+  are *order* rather than arithmetic, so since roadmap item 13 they live in two
+  free functions in `src/ui/mod.rs` instead of inline in the view:
+  `switch_difficulty` and `load_words` take a `&mut Game`, do the reset, and
+  hand back an `AbandonCharge` or nothing for the view to apply. That is what
+  made them testable, and the seven tests on them fail if either order is
+  reversed — verified by reversing each and watching exactly one test go red.
   `hint` spends that budget: it reveals a letter
   drawn from the game's own `rng` (so a seeded game hints reproducibly) and
   charges one wrong guess, which is why hints needed no scoring change — a

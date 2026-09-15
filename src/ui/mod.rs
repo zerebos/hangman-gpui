@@ -684,6 +684,47 @@ fn hint_tooltip(game: &Game) -> &'static str {
     }
 }
 
+/// What walking out on a word costs: the word, and the difficulty it was
+/// dealt from.
+///
+/// Plain data, handed back by [`switch_difficulty`] and [`load_words`] from
+/// the state *before* the reset they perform, so the view has only to apply
+/// it and say so — and so a test can drive the whole rule without building a
+/// view. The difficulty is the field that makes this a type rather than a
+/// `String`: it is the one a reset would change out from under the loss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AbandonCharge {
+    word: String,
+    difficulty: Option<Difficulty>,
+}
+
+/// What a click on a difficulty pill did.
+///
+/// The two cases are not "worked" and "failed": `Refused` is the *rule* that a
+/// click on the difficulty already in play must not cost the word in hand, and
+/// it means nothing at all happened — no fresh pool, no new match, nothing to
+/// save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SwitchOutcome {
+    /// The difficulty asked for is the one in play and the match is still
+    /// running, so the game was left exactly as it was.
+    Refused,
+    /// A fresh pool was dealt, at the cost of the word that was on the board.
+    Dealt(Option<AbandonCharge>),
+}
+
+/// What a word list picked from disk did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LoadOutcome {
+    /// The file read and parsed, and a fresh pool was dealt from it — at the
+    /// cost of the word that was on the board.
+    Loaded(Option<AbandonCharge>),
+    /// The file could not be read, or held nothing playable. The game was left
+    /// exactly as it was, which is why this carries no charge: the word is
+    /// still on the board to be played.
+    Failed,
+}
+
 /// The word that is about to be thrown away, if throwing it away costs
 /// anything: its text, and the difficulty it belongs to.
 ///
@@ -691,9 +732,54 @@ fn hint_tooltip(game: &Game) -> &'static str {
 /// takes the word with it and may change the difficulty out from under the
 /// loss — which belongs to the list the word came from, not the one being
 /// switched to.
-fn word_being_abandoned(game: &Game) -> Option<(String, Option<Difficulty>)> {
-    game.has_word_to_lose()
-        .then(|| (game.word().to_string(), game.difficulty()))
+fn word_being_abandoned(game: &Game) -> Option<AbandonCharge> {
+    game.has_word_to_lose().then(|| AbandonCharge {
+        word: game.word().to_string(),
+        difficulty: game.difficulty(),
+    })
+}
+
+/// Switch to `difficulty`, dealing a fresh pool, and say what the word it
+/// replaces cost.
+///
+/// The order here is the rule, and it is why this is a function rather than
+/// three statements in the view: the charge is read *before*
+/// [`Game::set_difficulty`] deals the new pool, because afterwards the game
+/// reports the difficulty switched **to** and the loss belongs to the one the
+/// word came from. Reversing the two lines still compiles, still reads fine,
+/// and books every abandoned word against the wrong list.
+fn switch_difficulty(game: &mut Game, difficulty: Difficulty) -> SwitchOutcome {
+    // Ask first, because a click that changes nothing must not cost the word
+    // in hand — and because the answer is what decides whether there is a word
+    // to charge for at all.
+    if !game.would_switch_to(difficulty) {
+        return SwitchOutcome::Refused;
+    }
+    let charge = word_being_abandoned(game);
+    game.set_difficulty(difficulty);
+    SwitchOutcome::Dealt(charge)
+}
+
+/// Deal a fresh pool from the contents of a file the player picked, and say
+/// what the word it replaces cost.
+///
+/// The second half of the same rule: the charge is read before the load, as
+/// above, but it is only *handed back* on the success branch. A file that will
+/// not open, or that holds nothing playable, leaves the word on the board — so
+/// charging for it would take a word the player still has. `Failed` therefore
+/// carries no charge at all rather than a charge the view is trusted to
+/// ignore.
+fn load_words(game: &mut Game, contents: std::io::Result<String>) -> LoadOutcome {
+    let charge = word_being_abandoned(game);
+
+    let Ok(text) = contents else {
+        return LoadOutcome::Failed;
+    };
+    let words = text.lines().map(str::to_owned).collect();
+    if game.set_word_list(words).is_err() {
+        return LoadOutcome::Failed;
+    }
+    LoadOutcome::Loaded(charge)
 }
 
 /// The end-of-match line, or `None` while the match is still running.
@@ -1022,41 +1108,40 @@ impl HangmanView {
         }
     }
 
-    /// Charge a loss for a word walked away from, and say so.
+    /// Apply an [`AbandonCharge`], and say so.
     ///
-    /// This is [`HangmanView::record`] for the abandon case, with `difficulty`
-    /// passed in rather than read back off the game for the reason above. The
-    /// other two arguments `record` reads are not needed: an abandoned word is
-    /// lost, a lost word is worth no points, so the unspent budget never enters
-    /// the arithmetic, and the match is being discarded rather than finished so
-    /// there is no `MatchOutcome` to record.
-    fn record_abandoned(&mut self, word: &str, difficulty: Option<Difficulty>) -> Notice {
-        self.session.record_word(difficulty, GameResult::Lost, 0);
+    /// This is [`HangmanView::record`] for the abandon case, taking the
+    /// difficulty from the charge rather than reading it back off the game for
+    /// the reason [`switch_difficulty`] states. The other two arguments
+    /// `record` reads are not needed: an abandoned word is lost, a lost word is
+    /// worth no points, so the unspent budget never enters the arithmetic, and
+    /// the match is being discarded rather than finished so there is no
+    /// `MatchOutcome` to record.
+    fn record_abandoned(&mut self, charge: AbandonCharge) -> Notice {
+        self.session
+            .record_word(charge.difficulty, GameResult::Lost, 0);
         self.settings.stats = self.session.stats().clone();
         self.settings.save();
+        let word = charge.word;
         Notice::bad(format!("Leaving {word} counts as a loss in my book."))
     }
 
     fn set_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
         // The pills are a `ButtonGroup`, so the selected one is still a button
-        // and clicking it still fires. Ask first, because a click that changes
-        // nothing must not cost the word in hand — and because the answer is
-        // what decides whether there is a word to charge for at all. Once the
-        // match is over the same click does restart, which is the footer's
-        // "pick a difficulty to start a new match".
-        if !self.game.would_switch_to(difficulty) {
+        // and clicking it still fires — and a click that changes nothing must
+        // not cost the word in hand. `switch_difficulty` is where that rule and
+        // the order the charge has to be read in both live. Once the match is
+        // over the same click does restart, which is the footer's "pick a
+        // difficulty to start a new match".
+        let SwitchOutcome::Dealt(charge) = switch_difficulty(&mut self.game, difficulty) else {
             return;
-        }
-        // Read before the switch deals a new pool and takes the word with it.
-        let abandoned = word_being_abandoned(&self.game);
-
-        self.game.set_difficulty(difficulty);
+        };
         // A fresh match, so the match score starts again from zero. The streak
         // and the lifetime tally are untouched on purpose — see `crate::stats`.
         self.session.start_match();
         // Walking out on a half-played word is losing it, exactly as giving up
         // is: without this the streak keeps a free escape hatch.
-        self.notice = abandoned.map(|(word, from)| self.record_abandoned(&word, from));
+        self.notice = charge.map(|charge| self.record_abandoned(charge));
         self.last_guess = None;
         self.settings.difficulty = Some(difficulty);
         self.settings.save();
@@ -1134,31 +1219,24 @@ impl HangmanView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Read before the load, for the same reason as in `set_difficulty` —
-        // and only charged for on the success branch below, because a list that
-        // turns out to be unreadable or empty leaves the current word alone.
-        let abandoned = word_being_abandoned(&self.game);
-
-        let loaded = contents.ok().and_then(|text| {
-            let words = text.lines().map(str::to_owned).collect();
-            self.game.set_word_list(words).ok()
-        });
-
-        match loaded {
-            Some(()) => {
+        // `load_words` reads the charge before the load and hands it back only
+        // on the success branch, because a list that turns out to be unreadable
+        // or empty leaves the current word alone.
+        match load_words(&mut self.game, contents) {
+            LoadOutcome::Loaded(charge) => {
                 // A loaded list starts a fresh match, exactly as picking a
                 // difficulty does, so the match score restarts with it — and,
                 // exactly as picking a difficulty does, it loses you the word
                 // you walked out on.
                 self.session.start_match();
-                self.notice = abandoned.map(|(word, from)| self.record_abandoned(&word, from));
+                self.notice = charge.map(|charge| self.record_abandoned(charge));
                 self.last_guess = None;
                 window.push_notification(
                     format!("Loaded {} words. New match!", self.game.total_words()),
                     cx,
                 );
             }
-            None => self.notice = Some(Notice::bad(FILE_ERROR)),
+            LoadOutcome::Failed => self.notice = Some(Notice::bad(FILE_ERROR)),
         }
         cx.notify();
     }
@@ -2213,11 +2291,12 @@ mod tests {
     // this module's `gpui_kit::*` glob — and with it gpui's own `test` macro,
     // which shadows the built-in attribute and blows the recursion limit.
     use super::{
-        CUSTOM_LIST_SUBTITLE, DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, GUESS_REVEAL,
-        HINT_TOOLTIP, HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, RESET_NOTHING,
-        SHAKE_DISTANCE, Shortcut, Stats, WIN_REVEAL, dialog_top_margin, guess_count, hint_tooltip,
-        key_state, match_summary, percent, plural, points, reset_stats_summary, shake_offset,
-        shortcut_legend, subtitle, to_bounds, to_rect, word_being_abandoned,
+        AbandonCharge, CUSTOM_LIST_SUBTITLE, DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION,
+        GUESS_REVEAL, HINT_TOOLTIP, HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState,
+        LoadOutcome, RESET_NOTHING, SHAKE_DISTANCE, Shortcut, Stats, SwitchOutcome, WIN_REVEAL,
+        dialog_top_margin, guess_count, hint_tooltip, key_state, load_words, match_summary,
+        percent, plural, points, reset_stats_summary, shake_offset, shortcut_legend, subtitle,
+        switch_difficulty, to_bounds, to_rect, word_being_abandoned,
     };
     use crate::game::{Difficulty, Game, GameResult};
     use crate::settings::Rect;
@@ -2797,7 +2876,10 @@ mod tests {
 
         assert_eq!(
             word_being_abandoned(&game),
-            Some((word, Some(Difficulty::Easy))),
+            Some(AbandonCharge {
+                word,
+                difficulty: Some(Difficulty::Easy),
+            }),
         );
     }
 
@@ -2821,9 +2903,9 @@ mod tests {
             let mut game = Game::with_seed(difficulty, 7);
             guess_wrong(&mut game);
 
-            let (_, from) = word_being_abandoned(&game).expect("the word has a guess on it");
+            let charge = word_being_abandoned(&game).expect("the word has a guess on it");
 
-            assert_eq!(from, Some(difficulty));
+            assert_eq!(charge.difficulty, Some(difficulty));
         }
     }
 
@@ -2832,9 +2914,150 @@ mod tests {
         let mut game = two_word_game();
         guess_wrong(&mut game);
 
-        let (_, from) = word_being_abandoned(&game).expect("the word has a guess on it");
+        let charge = word_being_abandoned(&game).expect("the word has a guess on it");
 
-        assert_eq!(from, None);
+        assert_eq!(charge.difficulty, None);
+    }
+
+    // ------------------------------------------------- the abandon rule's order
+    //
+    // The half `word_being_abandoned` cannot reach. Both rules `CLAUDE.md`
+    // states about the abandon charge are properties of the *order* of the
+    // statements that throw a word away, not of any value read off a `&Game`:
+    // the charge has to be read before the reset, and the file path has to hand
+    // one back only when the file actually replaced the word. Each is a
+    // one-line edit away from being wrong in a way that reads fine, which is
+    // what these drive — through `switch_difficulty` and `load_words`, which
+    // take a `&mut Game` and return plain data, so no view is built here
+    // either.
+
+    #[test]
+    fn switching_difficulty_charges_the_word_to_the_list_it_came_from() {
+        // Every ordered pair, because the failure this guards is reading the
+        // difficulty back *after* the switch: that returns the one switched to,
+        // so the loss would be booked against the list the player is about to
+        // start rather than the one they walked out on.
+        for from in Difficulty::ALL {
+            for to in Difficulty::ALL {
+                if from == to {
+                    continue;
+                }
+                let mut game = Game::with_seed(from, 7);
+                guess_wrong(&mut game);
+                let word = game.word().to_string();
+
+                let outcome = switch_difficulty(&mut game, to);
+
+                assert_eq!(
+                    outcome,
+                    SwitchOutcome::Dealt(Some(AbandonCharge {
+                        word,
+                        difficulty: Some(from),
+                    })),
+                    "{from:?} -> {to:?} charged the wrong list",
+                );
+                // And the switch really did happen, so the charge above was
+                // read from the state before it rather than from a no-op.
+                assert_eq!(game.difficulty(), Some(to));
+            }
+        }
+    }
+
+    #[test]
+    fn switching_away_from_an_untouched_word_deals_a_new_pool_for_nothing() {
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+
+        let outcome = switch_difficulty(&mut game, Difficulty::Insane);
+
+        assert_eq!(outcome, SwitchOutcome::Dealt(None));
+        assert_eq!(game.difficulty(), Some(Difficulty::Insane));
+    }
+
+    #[test]
+    fn re_clicking_the_difficulty_in_play_costs_the_word_nothing() {
+        // The pills are a `ButtonGroup`, so the selected one still fires. This
+        // is the refusal that keeps a stray click from dealing a new word, and
+        // it has to come *before* the charge is read or the click would book a
+        // loss for a word it then leaves on the board.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        guess_wrong(&mut game);
+        let word = game.word().to_string();
+        let guessed = game.guessed_letters().clone();
+
+        let outcome = switch_difficulty(&mut game, Difficulty::Easy);
+
+        assert_eq!(outcome, SwitchOutcome::Refused);
+        assert_eq!(game.word(), word, "the word in hand was dealt away");
+        assert_eq!(game.guessed_letters(), &guessed);
+    }
+
+    #[test]
+    fn the_difficulty_just_played_can_still_be_re_clicked_to_replay_it() {
+        // The other half of that refusal: once the match is scored, clicking
+        // the difficulty you just played is the only way to play it again, so
+        // it has to deal — and a finished word is never charged for.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        lose_the_match(&mut game);
+
+        let outcome = switch_difficulty(&mut game, Difficulty::Easy);
+
+        assert_eq!(outcome, SwitchOutcome::Dealt(None));
+        assert!(!game.is_match_over(), "the replay did not start a match");
+    }
+
+    #[test]
+    fn a_word_list_that_loads_charges_the_word_it_replaces() {
+        let mut game = Game::with_seed(Difficulty::Hard, 7);
+        guess_wrong(&mut game);
+        let word = game.word().to_string();
+
+        let outcome = load_words(&mut game, Ok("ALPHA\nOMEGA\n".to_string()));
+
+        assert_eq!(
+            outcome,
+            LoadOutcome::Loaded(Some(AbandonCharge {
+                word,
+                difficulty: Some(Difficulty::Hard),
+            })),
+        );
+        assert_eq!(game.difficulty(), None, "a list of your own has none");
+    }
+
+    #[test]
+    fn a_word_list_that_will_not_read_charges_nothing() {
+        // The click that fails looks exactly like the click that succeeds, and
+        // the difference is entirely in which branch the charge is handed back
+        // from. Charging here would take a word the player still has in front
+        // of them.
+        let mut game = Game::with_seed(Difficulty::Hard, 7);
+        guess_wrong(&mut game);
+        let word = game.word().to_string();
+        let guessed = game.guessed_letters().clone();
+
+        let outcome = load_words(
+            &mut game,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        );
+
+        assert_eq!(outcome, LoadOutcome::Failed);
+        assert_eq!(game.word(), word, "the word in hand was dealt away");
+        assert_eq!(game.guessed_letters(), &guessed);
+        assert_eq!(game.difficulty(), Some(Difficulty::Hard));
+    }
+
+    #[test]
+    fn a_word_list_with_nothing_playable_in_it_charges_nothing_either() {
+        // The second failure, and the one that reads as a success all the way
+        // up to `set_word_list`: the file opened, it just had no words in it.
+        let mut game = Game::with_seed(Difficulty::Hard, 7);
+        guess_wrong(&mut game);
+        let word = game.word().to_string();
+
+        let outcome = load_words(&mut game, Ok("\n  \n,,,\n".to_string()));
+
+        assert_eq!(outcome, LoadOutcome::Failed);
+        assert_eq!(game.word(), word, "the word in hand was dealt away");
+        assert_eq!(game.difficulty(), Some(Difficulty::Hard));
     }
 
     // ------------------------------------------------------- the window frame
