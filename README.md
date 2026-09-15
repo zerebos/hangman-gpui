@@ -31,8 +31,8 @@ engine (with 54 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (30 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), and [`src/ui/`](src/ui/) is everything GPUI — plus the forty-four
-tests its own pure helpers have grown. That is 188 tests, and
+(35 more), and [`src/ui/`](src/ui/) is everything GPUI — plus the fifty-one
+tests its own pure helpers have grown. That is 195 tests, and
 `cargo test` runs the lot in well under a second. The word lists and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -357,8 +357,8 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. Thirteen ideas have been agreed for where it goes next; nine have
-shipped and four are open. The numbering is the order they were argued about
+mirroring it. Thirteen ideas have been agreed for where it goes next; ten have
+shipped and three are open. The numbering is the order they were argued about
 rather than any committed order, and it stays as it is even as items land —
 commit messages, pull requests and `CLAUDE.md` all cite these by number.
 
@@ -402,31 +402,6 @@ commit messages, pull requests and `CLAUDE.md` all cite these by number.
   whichever way the other three go. Closing the window mid-word is
   deliberately not on this list: item 11 closes that hole by remembering the
   word instead of asking about it, and the two are alternatives.
-- **13. Make the abandon rule testable.** Item 9 pulled every helper that only
-  *reads* the game out of the view, and the abandon rule is what it could not
-  reach: the two rules `CLAUDE.md` states about it are sequencing rather than
-  arithmetic, so no function over a `&Game` can express either. The first is
-  that the loss belongs to the difficulty the word came from — by the time it
-  is booked, the game has already been reset and is reporting the difficulty
-  switched *to*, so the word and its difficulty have to be read before the
-  throw. The second is that `load_word_list` charges only on its success
-  branch, since a file that will not parse leaves the word on the board
-  untouched. Both are properties of the *order* of statements inside
-  `set_difficulty` and `load_word_list`, and reversing either is a one-line
-  edit that reads fine and costs a player a word.
-  `word_being_abandoned` is covered as of item 9 and answers the "is there
-  anything to charge for, and whose is it" half, which leaves the charging
-  itself. The shape that would close it is to have something decide what an
-  abandonment *costs* from the state before the reset and hand it back as
-  plain data — a charge to apply, or nothing — leaving the view to apply it
-  and say so. A test could then drive the three cases that matter and never
-  build a view: a part-played word walked away from is charged to its own
-  difficulty, an untouched one is charged nothing, and a word list that fails
-  to parse is charged nothing even though the click that failed looked exactly
-  like the one that succeeds. This is worth doing on its own account: the
-  abandon rule is the one piece of this game that has already come close to
-  shipping wrong, when the warning tooltip that announces it nearly
-  interpolated the answer into itself during play.
 
 ### Shipped
 
@@ -481,6 +456,19 @@ commit messages, pull requests and `CLAUDE.md` all cite these by number.
   window's key context, so a letter typed at a dialog is guessed on the board
   behind it unless it is guarded. Its backdrop dim and its placement were the
   two things worth overriding. Which *other* moments deserve one is item 12.
+
+- **13. Make the abandon rule testable.** The two rules about walking out on a
+  part-played word are both properties of the *order* of the statements that
+  throw it away, so item 9's "a free function over a `&Game`" could not express
+  either. They are two free functions over a `&mut Game` instead —
+  `switch_difficulty` and `load_words` in [`src/ui/mod.rs`](src/ui/mod.rs) — that
+  do the reset themselves and hand back an `AbandonCharge`, or nothing, for the
+  view to apply and announce. Seven tests drive the cases that matter: a
+  part-played word is charged to the difficulty it came from, an untouched one
+  is charged nothing, re-clicking the difficulty in play changes nothing at all,
+  and a word list that will not open — or that opens with nothing playable in
+  it — leaves the word on the board uncharged. Each reversal of either order
+  fails exactly one of them.
 
 **Not planned:** networked multiplayer — the original's external layer is the one
 thing the port deliberately dropped, and this would only bring it back — fetching
