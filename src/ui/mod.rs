@@ -28,6 +28,7 @@ use crate::audio::Audio;
 use crate::game::{Cell, Difficulty, Game, GameResult, GuessResult, HintResult, MatchOutcome};
 use crate::settings::{Rect, Settings, ThemeChoice, WindowFrame};
 use crate::stats::{DifficultyStats, Session, Stats};
+use crate::words::Pack;
 use gallows::gallows;
 
 /// The key context this view claims. Key bindings registered against it (see
@@ -82,6 +83,15 @@ const CUSTOM_LIST_SUBTITLE: &str = "Custom word list";
 /// out of the keymap rather than typed twice, and it spells itself the way the
 /// platform does (`Ctrl+H` on Windows and Linux, `⌃H` on macOS).
 const HINT_TOOLTIP: &str = "Reveal a letter — costs one wrong guess";
+/// What the Clue button promises, and the two reasons it can be off.
+///
+/// It names its price the way [`HINT_TOOLTIP`] does, and the price is nothing:
+/// a clue says what the word *means* and leaves you to spell it, so there is
+/// no guess to charge for. A pack that says nothing about a word is the only
+/// reason it is ever unavailable on a live word.
+const CLUE_TOOLTIP: &str = "Show what the word means — costs nothing";
+const CLUE_TOOLTIP_NONE: &str = "No clue: this word list does not carry one";
+const CLUE_TOOLTIP_SHOWN: &str = "The clue is already on screen";
 const HINT_TOOLTIP_LAST_GUESS: &str = "No hint: it would cost the last guess you have";
 const HINT_TOOLTIP_OVER: &str = "No hint: this word is already finished";
 
@@ -486,7 +496,7 @@ fn dialog_is_open(window: &mut Window, cx: &mut App) -> bool {
     window.has_active_dialog(cx)
 }
 
-actions!(hangman, [OpenWordList, ChangeWord, Hint]);
+actions!(hangman, [OpenWordList, ChangeWord, Hint, ShowClue]);
 
 // ------------------------------------------------------------ keyboard legend
 //
@@ -507,6 +517,7 @@ actions!(hangman, [OpenWordList, ChangeWord, Hint]);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shortcut {
     Hint,
+    Clue,
     ChangeWord,
     OpenWordList,
     NextWord,
@@ -517,6 +528,7 @@ impl Shortcut {
     fn label(self) -> &'static str {
         match self {
             Shortcut::Hint => "Reveal a letter",
+            Shortcut::Clue => "Show what the word means",
             Shortcut::ChangeWord => "Give up on this word",
             Shortcut::OpenWordList => "Open a word list",
             Shortcut::NextWord => "Next word",
@@ -538,14 +550,23 @@ struct ShortcutHint {
 /// Kept out of the render tree, and free of GPUI types, so the rule about
 /// which keys are offered when is a plain function a test can call — the view
 /// itself opens a window and cannot be.
-fn shortcut_legend(game: &Game) -> Vec<ShortcutHint> {
-    // The three that are always listed. `Game::give_up` refuses on a word that
+fn shortcut_legend(game: &Game, clue_shown: bool) -> Vec<ShortcutHint> {
+    // The four that are always listed. `Game::give_up` refuses on a word that
     // has already ended, and `Game::can_hint` refuses on the last guess and on
     // a finished word; loading a list of your own is never refused.
+    //
+    // The clue needs the view's own `clue_shown` as well as the game, which is
+    // why it is a parameter rather than another thing read off the `Game`:
+    // whether the clue is on screen is not a rule of the game — nothing about
+    // it is scored, and `game.rs` deliberately does not track it.
     let mut hints = vec![
         ShortcutHint {
             shortcut: Shortcut::Hint,
             live: game.can_hint(),
+        },
+        ShortcutHint {
+            shortcut: Shortcut::Clue,
+            live: can_show_clue(game, clue_shown),
         },
         ShortcutHint {
             shortcut: Shortcut::ChangeWord,
@@ -575,6 +596,7 @@ fn shortcut_legend(game: &Game) -> Vec<ShortcutHint> {
 fn shortcut_kbd(shortcut: Shortcut, window: &Window) -> Option<Kbd> {
     match shortcut {
         Shortcut::Hint => Kbd::binding_for_action(&Hint, Some(KEY_CONTEXT), window),
+        Shortcut::Clue => Kbd::binding_for_action(&ShowClue, Some(KEY_CONTEXT), window),
         Shortcut::ChangeWord => Kbd::binding_for_action(&ChangeWord, Some(KEY_CONTEXT), window),
         Shortcut::OpenWordList => Kbd::binding_for_action(&OpenWordList, Some(KEY_CONTEXT), window),
         // The one key here with no action behind it. Enter and Space are
@@ -634,11 +656,48 @@ enum KeyState {
     OutOfPlay,
 }
 
-/// What the title bar shows beside the wordmark.
-fn subtitle(game: &Game) -> &'static str {
-    match game.difficulty() {
+/// What the title bar shows beside the wordmark: where the word came from,
+/// and what kind of thing it is.
+///
+/// The category is safe to show while the word is still in play — there is a
+/// test in `game.rs` that no bundled category or clue contains its own word —
+/// and it is the whole reason a pack carries one. A pack that says nothing
+/// leaves the line exactly as it was before packs existed.
+///
+/// The list half is the difficulty, or the pack's own name, or this module's
+/// wording for a pack that did not give one. That order is deliberate: a pack
+/// reached through a pill is always called by the pill's name, whatever the
+/// file says, so a downloaded pack cannot relabel the difficulty ladder.
+fn subtitle(game: &Game) -> String {
+    let list = match game.difficulty() {
         Some(difficulty) => difficulty.label(),
-        None => CUSTOM_LIST_SUBTITLE,
+        None => game.pack_name().unwrap_or(CUSTOM_LIST_SUBTITLE),
+    };
+    match game.category() {
+        Some(category) => format!("{list} · {category}"),
+        None => list.to_string(),
+    }
+}
+
+/// Whether [`HangmanView::show_clue`] would put anything new on screen.
+///
+/// The Clue button greys out on this, exactly as Hint greys out on
+/// [`Game::can_hint`]. Unlike a hint it has nothing to do with the budget: a
+/// clue reveals no letter, so it is available on the last guess and stays
+/// available after the word is over, when it is the only thing that explains
+/// what you were looking at.
+fn can_show_clue(game: &Game, clue_shown: bool) -> bool {
+    game.clue().is_some() && !clue_shown
+}
+
+/// What the Clue button says it will do, or why it will not.
+fn clue_tooltip(game: &Game, clue_shown: bool) -> &'static str {
+    if game.clue().is_none() {
+        CLUE_TOOLTIP_NONE
+    } else if clue_shown {
+        CLUE_TOOLTIP_SHOWN
+    } else {
+        CLUE_TOOLTIP
     }
 }
 
@@ -767,21 +826,42 @@ fn switch_difficulty(game: &mut Game, difficulty: Difficulty) -> SwitchOutcome {
 ///
 /// The second half of the same rule: the charge is read before the load, as
 /// above, but it is only *handed back* on the success branch. A file that will
-/// not open, or that holds nothing playable, leaves the word on the board — so
-/// charging for it would take a word the player still has. `Failed` therefore
-/// carries no charge at all rather than a charge the view is trusted to
-/// ignore.
+/// not open, will not parse, or holds nothing playable leaves the word on the
+/// board — so charging for it would take a word the player still has. `Failed`
+/// therefore carries no charge at all rather than a charge the view is trusted
+/// to ignore.
+///
+/// [`Pack::parse`] is what decides whether the text is a JSON pack or the
+/// original's one-word-per-line list, and it decides it from the text rather
+/// than from the file's name. That means a `.txt` full of JSON works and a
+/// `.json` full of lines works, which matters because the file picker's filter
+/// is a suggestion and the player's own naming is not ours to police.
 fn load_words(game: &mut Game, contents: std::io::Result<String>) -> LoadOutcome {
     let charge = word_being_abandoned(game);
 
     let Ok(text) = contents else {
         return LoadOutcome::Failed;
     };
-    let words = text.lines().map(str::to_owned).collect();
-    if game.set_word_list(words).is_err() {
+    let Ok(pack) = Pack::parse(&text) else {
+        return LoadOutcome::Failed;
+    };
+    if game.set_pack(pack).is_err() {
         return LoadOutcome::Failed;
     }
     LoadOutcome::Loaded(charge)
+}
+
+/// What the floating notification says after a list loads.
+///
+/// A pack bigger than a match is the normal case now, and "loaded 200 words"
+/// on its own would be a half-truth: the match is ten of them. Both numbers,
+/// or just the one when the pack is small enough to be played out.
+fn loaded_summary(pack_words: usize, match_words: usize) -> String {
+    if pack_words > match_words {
+        format!("Loaded {pack_words} words — playing {match_words} of them.")
+    } else {
+        format!("Loaded {}. New match!", plural(pack_words as u64, "word"))
+    }
 }
 
 /// The end-of-match line, or `None` while the match is still running.
@@ -853,6 +933,13 @@ pub struct HangmanView {
     /// fact about the last frame, not about the rules. Cleared whenever a
     /// fresh word starts, so nothing animates at the top of a game.
     last_guess: Option<char>,
+    /// Whether the current word's clue is on screen.
+    ///
+    /// The view's own, not the game's: a clue reveals no letter and costs no
+    /// guess, so there is no rule in `game.rs` for it to be part of — asking a
+    /// pack what a word means changes nothing that is scored. Cleared wherever
+    /// a fresh word is dealt, which is the same three places `last_guess` is.
+    clue_shown: bool,
     /// GPUI only delivers key events to elements on the focus path, so the root
     /// element has to own a focus handle and actually be focused before typing
     /// a letter can reach us.
@@ -898,6 +985,7 @@ impl HangmanView {
         Self {
             game: Game::new(settings.difficulty.unwrap_or_default()),
             notice: None,
+            clue_shown: false,
             last_guess: None,
             focus_handle: cx.focus_handle(),
             audio: Audio::new(),
@@ -1008,6 +1096,26 @@ impl HangmanView {
         self.hint(cx);
     }
 
+    fn on_show_clue(&mut self, _: &ShowClue, window: &mut Window, cx: &mut Context<Self>) {
+        if dialog_is_open(window, cx) {
+            return;
+        }
+        self.show_clue(cx);
+    }
+
+    /// Put the current word's clue on screen, if the pack carries one.
+    ///
+    /// Nothing is recorded and nothing is charged — see [`can_show_clue`] —
+    /// so unlike [`HangmanView::hint`] this touches neither the game nor the
+    /// score. It is one flag and a repaint.
+    fn show_clue(&mut self, cx: &mut Context<Self>) {
+        if !can_show_clue(&self.game, self.clue_shown) {
+            return;
+        }
+        self.clue_shown = true;
+        cx.notify();
+    }
+
     /// Put a finished word — and, when it was the last of the match, the match
     /// — on the scoreboard, then write the new lifetime tally to disk.
     ///
@@ -1106,6 +1214,7 @@ impl HangmanView {
         if self.game.new_game() {
             self.notice = None;
             self.last_guess = None;
+            self.clue_shown = false;
             cx.notify();
         }
     }
@@ -1145,6 +1254,7 @@ impl HangmanView {
         // is: without this the streak keeps a free escape hatch.
         self.notice = charge.map(|charge| self.record_abandoned(charge));
         self.last_guess = None;
+        self.clue_shown = false;
         self.settings.difficulty = Some(difficulty);
         self.settings.save();
         cx.notify();
@@ -1183,7 +1293,8 @@ impl HangmanView {
         self.give_up(cx);
     }
 
-    /// The original's "Game > Open File...": pick a `.txt` with one word per line.
+    /// The original's "Game > Open File...": pick a `.txt` with one word per
+    /// line, or a `.json` pack with categories and clues in it.
     fn on_open_word_list(&mut self, _: &OpenWordList, window: &mut Window, cx: &mut Context<Self>) {
         if dialog_is_open(window, cx) {
             return;
@@ -1195,7 +1306,7 @@ impl HangmanView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Choose a word list (.txt, one word per line)".into()),
+            prompt: Some("Choose a word list (.txt) or a word pack (.json)".into()),
         });
 
         cx.spawn_in(window, async move |view, cx| {
@@ -1233,8 +1344,9 @@ impl HangmanView {
                 self.session.start_match();
                 self.notice = charge.map(|charge| self.record_abandoned(charge));
                 self.last_guess = None;
+                self.clue_shown = false;
                 window.push_notification(
-                    format!("Loaded {} words. New match!", self.game.total_words()),
+                    loaded_summary(self.game.pack_words(), self.game.total_words()),
                     cx,
                 );
             }
@@ -1393,6 +1505,20 @@ impl HangmanView {
                             .on_click(cx.listener(|this, _, _, cx| this.hint(cx))),
                     )
                     .child(
+                        Button::new("clue")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Info)
+                            .label("Clue")
+                            .disabled(!can_show_clue(&self.game, self.clue_shown))
+                            .tooltip_with_action(
+                                clue_tooltip(&self.game, self.clue_shown),
+                                &ShowClue,
+                                Some(KEY_CONTEXT),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.show_clue(cx))),
+                    )
+                    .child(
                         Button::new("toggle-stats")
                             .small()
                             .ghost()
@@ -1422,7 +1548,7 @@ impl HangmanView {
                             .icon(IconName::FileText)
                             .label("Open word list…")
                             .tooltip_with_action(
-                                "Play a .txt of your own",
+                                "Play a word list or pack of your own",
                                 &OpenWordList,
                                 Some(KEY_CONTEXT),
                             )
@@ -1793,6 +1919,18 @@ impl HangmanView {
             .px_5()
             .py_3()
             .child(eyebrow("THE WORD", cx))
+            // Under the eyebrow and above the row, so revealing it pushes the
+            // letters down rather than shifting the panel's other children:
+            // the keyboard below is what the eye is on while a word is live.
+            .when(self.clue_shown, |this| {
+                this.child(
+                    div()
+                        .text_sm()
+                        .italic()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(self.game.clue().unwrap_or_default().to_string()),
+                )
+            })
             .child(if wrong == 0 {
                 row.into_any_element()
             } else {
@@ -2221,29 +2359,33 @@ impl HangmanView {
             .py_2()
             .border_t_1()
             .border_color(cx.theme().border)
-            .children(shortcut_legend(&self.game).into_iter().filter_map(|hint| {
-                // No binding in the keymap, no entry: an unlabelled promise is
-                // worse than nothing. Unreachable while `main.rs` binds all
-                // three, which is the point of asking rather than assuming.
-                let kbd = shortcut_kbd(hint.shortcut, window)?;
-                Some(
-                    h_flex()
-                        .items_center()
-                        .gap_1p5()
-                        // A key the game would currently refuse is dimmed
-                        // rather than dropped, so the strip stays the same
-                        // shape and the rule stays readable — the same call
-                        // the disabled `Hint` button makes.
-                        .opacity(if hint.live { 1. } else { 0.4 })
-                        .child(kbd.outline())
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(hint.shortcut.label()),
-                        ),
-                )
-            }))
+            .children(
+                shortcut_legend(&self.game, self.clue_shown)
+                    .into_iter()
+                    .filter_map(|hint| {
+                        // No binding in the keymap, no entry: an unlabelled promise is
+                        // worse than nothing. Unreachable while `main.rs` binds all
+                        // three, which is the point of asking rather than assuming.
+                        let kbd = shortcut_kbd(hint.shortcut, window)?;
+                        Some(
+                            h_flex()
+                                .items_center()
+                                .gap_1p5()
+                                // A key the game would currently refuse is dimmed
+                                // rather than dropped, so the strip stays the same
+                                // shape and the rule stays readable — the same call
+                                // the disabled `Hint` button makes.
+                                .opacity(if hint.live { 1. } else { 0.4 })
+                                .child(kbd.outline())
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(hint.shortcut.label()),
+                                ),
+                        )
+                    }),
+            )
     }
 }
 
@@ -2263,6 +2405,7 @@ impl Render for HangmanView {
             // of the letter buttons has been tabbed to.
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(Self::on_open_word_list))
+            .on_action(cx.listener(Self::on_show_clue))
             .on_action(cx.listener(Self::on_change_word))
             .on_action(cx.listener(Self::on_hint))
             .size_full()
@@ -2293,16 +2436,18 @@ mod tests {
     // this module's `gpui_kit::*` glob — and with it gpui's own `test` macro,
     // which shadows the built-in attribute and blows the recursion limit.
     use super::{
-        AbandonCharge, CUSTOM_LIST_SUBTITLE, DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION,
-        GUESS_REVEAL, HINT_TOOLTIP, HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState,
-        LoadOutcome, RESET_NOTHING, SHAKE_DISTANCE, Shortcut, Stats, SwitchOutcome, WIN_REVEAL,
-        dialog_top_margin, guess_count, hint_tooltip, key_state, load_words, match_summary,
-        percent, plural, points, reset_stats_summary, shake_offset, shortcut_legend, subtitle,
-        switch_difficulty, to_bounds, to_rect, word_being_abandoned,
+        AbandonCharge, CLUE_TOOLTIP, CLUE_TOOLTIP_NONE, CLUE_TOOLTIP_SHOWN, CUSTOM_LIST_SUBTITLE,
+        DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, GUESS_REVEAL, HINT_TOOLTIP,
+        HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, LoadOutcome, RESET_NOTHING,
+        SHAKE_DISTANCE, Shortcut, Stats, SwitchOutcome, WIN_REVEAL, can_show_clue, clue_tooltip,
+        dialog_top_margin, guess_count, hint_tooltip, key_state, load_words, loaded_summary,
+        match_summary, percent, plural, points, reset_stats_summary, shake_offset, shortcut_legend,
+        subtitle, switch_difficulty, to_bounds, to_rect, word_being_abandoned,
     };
     use crate::game::{Difficulty, Game, GameResult};
     use crate::settings::Rect;
     use crate::stats::Session;
+    use crate::words::Pack;
 
     /// How many cell indices the [`super::Reveal`] tests sweep. Both of them
     /// claim something about *every* letter of a word, so the bound has to sit
@@ -2370,10 +2515,18 @@ mod tests {
     }
 
     /// Everything in here goes through [`shortcut_legend`], which takes a
-    /// `&Game` and returns plain data — no GPUI type is constructed and no
-    /// window is opened, which is what keeps these runnable with the rest.
+    /// `&Game` plus the view's `clue_shown` flag and returns plain data — no
+    /// GPUI type is constructed and no window is opened, which is what keeps
+    /// these runnable with the rest.
+    ///
+    /// The flag defaults to `false` here, which is a word's opening state; the
+    /// clue tests below pass it explicitly through [`legend_with_clue_shown`].
     fn legend(game: &Game) -> Vec<(Shortcut, bool)> {
-        shortcut_legend(game)
+        legend_with_clue_shown(game, false)
+    }
+
+    fn legend_with_clue_shown(game: &Game, clue_shown: bool) -> Vec<(Shortcut, bool)> {
+        shortcut_legend(game, clue_shown)
             .into_iter()
             .map(|hint| (hint.shortcut, hint.live))
             .collect()
@@ -2405,13 +2558,16 @@ mod tests {
     }
 
     #[test]
-    fn a_word_in_play_offers_the_three_standing_shortcuts() {
+    fn a_word_in_play_offers_the_four_standing_shortcuts() {
         let game = Game::with_seed(Difficulty::Easy, 7);
 
         assert_eq!(
             legend(&game),
             vec![
                 (Shortcut::Hint, true),
+                // Live because every bundled word carries a clue, which
+                // `game.rs` has its own test for.
+                (Shortcut::Clue, true),
                 (Shortcut::ChangeWord, true),
                 (Shortcut::OpenWordList, true),
             ]
@@ -2433,6 +2589,9 @@ mod tests {
             legend(&game),
             vec![
                 (Shortcut::Hint, false),
+                // The clue is untouched by the budget running down — that is
+                // the whole difference between the two keys.
+                (Shortcut::Clue, true),
                 (Shortcut::ChangeWord, true),
                 (Shortcut::OpenWordList, true),
             ]
@@ -2449,6 +2608,7 @@ mod tests {
             legend(&game),
             vec![
                 (Shortcut::Hint, false),
+                (Shortcut::Clue, true),
                 (Shortcut::ChangeWord, false),
                 (Shortcut::OpenWordList, true),
                 (Shortcut::NextWord, true),
@@ -2529,19 +2689,160 @@ mod tests {
             .expect("two words is not an empty list")
     }
 
+    // ------------------------------------------------------------------ clues
+
+    /// A one-word game whose word carries a category and a clue, which is what
+    /// the bundled packs look like and what a `.txt` never can.
+    fn clued_game() -> Game {
+        Game::from_pack(
+            Pack::parse(
+                r#"{ "name": "Fixtures", "words": [
+                    { "word": "Alpha", "category": "Letters", "clue": "The first of them." }
+                ] }"#,
+            )
+            .expect("the fixture is valid JSON"),
+        )
+        .expect("one word is not an empty pack")
+    }
+
+    #[test]
+    fn a_clue_is_offered_once_and_then_greyed() {
+        let game = clued_game();
+        assert!(can_show_clue(&game, false));
+        assert!(
+            !can_show_clue(&game, true),
+            "showing it twice reveals nothing new"
+        );
+    }
+
+    #[test]
+    fn a_word_with_no_clue_never_offers_one() {
+        // Exactly what a `.txt` loaded from disk produces, so this is the
+        // common case rather than an edge one.
+        let game = two_word_game();
+        assert_eq!(game.clue(), None);
+        assert!(!can_show_clue(&game, false));
+    }
+
+    #[test]
+    fn a_clue_stays_available_after_the_word_is_over() {
+        // The one place it parts company with `Hint`, which `can_hint` refuses
+        // on a finished word. A clue reveals no letter, so there is nothing for
+        // it to spoil — and once the word is lost the clue is the only thing
+        // that explains what you were looking at.
+        let mut game = clued_game();
+        game.give_up();
+        assert!(game.is_game_over());
+        assert!(!game.can_hint());
+        assert!(can_show_clue(&game, false));
+    }
+
+    #[test]
+    fn the_clue_tooltip_says_which_of_the_three_states_it_is_in() {
+        let clued = clued_game();
+        assert_eq!(clue_tooltip(&clued, false), CLUE_TOOLTIP);
+        assert_eq!(clue_tooltip(&clued, true), CLUE_TOOLTIP_SHOWN);
+        assert_eq!(clue_tooltip(&two_word_game(), false), CLUE_TOOLTIP_NONE);
+    }
+
+    #[test]
+    fn the_legend_greys_the_clue_key_once_the_clue_is_showing() {
+        let game = clued_game();
+        assert!(legend_with_clue_shown(&game, false).contains(&(Shortcut::Clue, true)));
+        assert!(legend_with_clue_shown(&game, true).contains(&(Shortcut::Clue, false)));
+        // Listed but dead on a list that carries no clues, on the same
+        // reasoning that keeps the disabled Hint key on screen.
+        assert!(legend_with_clue_shown(&two_word_game(), false).contains(&(Shortcut::Clue, false)));
+    }
+
+    #[test]
+    fn the_subtitle_names_the_category_beside_the_list() {
+        assert_eq!(subtitle(&clued_game()), "Fixtures · Letters");
+    }
+
+    #[test]
+    fn a_pack_with_no_name_falls_back_rather_than_showing_a_blank() {
+        let game = Game::from_pack(
+            Pack::parse(r#"{ "words": [{ "word": "Alpha", "category": "Letters" }] }"#)
+                .expect("valid JSON"),
+        )
+        .expect("one word is not an empty pack");
+        assert_eq!(subtitle(&game), format!("{CUSTOM_LIST_SUBTITLE} · Letters"));
+    }
+
+    #[test]
+    fn a_pack_reached_through_a_pill_is_called_by_the_pill() {
+        // The bundled packs name themselves after their difficulty, but the
+        // rule is that the difficulty wins regardless: a pack cannot relabel
+        // the ladder by calling itself something else.
+        for difficulty in Difficulty::ALL {
+            let game = Game::with_seed(difficulty, 3);
+            assert!(
+                subtitle(&game).starts_with(difficulty.label()),
+                "{} became {}",
+                difficulty.label(),
+                subtitle(&game)
+            );
+        }
+    }
+
+    #[test]
+    fn a_json_pack_loads_with_its_clues_intact() {
+        let mut game = two_word_game();
+        let outcome = load_words(
+            &mut game,
+            Ok(r#"{ "name": "Pets", "words": [{ "word": "Cat", "clue": "Small and unimpressed." }] }"#
+                .to_string()),
+        );
+        assert_eq!(outcome, LoadOutcome::Loaded(None));
+        assert_eq!(game.word(), "CAT");
+        assert_eq!(game.clue(), Some("Small and unimpressed."));
+        assert_eq!(game.pack_name(), Some("Pets"));
+    }
+
+    #[test]
+    fn a_json_pack_that_will_not_parse_leaves_the_word_alone() {
+        // The same branch a `.txt` with nothing playable in it takes: the file
+        // failed, so the word on the board is still the player's to play and
+        // must not be charged for.
+        let mut game = two_word_game();
+        game.guess('A');
+        let before = game.word().to_string();
+        let outcome = load_words(&mut game, Ok(r#"{ "words": [ }"#.to_string()));
+        assert_eq!(outcome, LoadOutcome::Failed);
+        assert_eq!(game.word(), before);
+    }
+
+    #[test]
+    fn the_loaded_notice_owns_up_to_playing_only_part_of_a_pack() {
+        assert_eq!(
+            loaded_summary(200, 10),
+            "Loaded 200 words — playing 10 of them."
+        );
+        // Nothing was held back, so nothing needs explaining.
+        assert_eq!(loaded_summary(10, 10), "Loaded 10 words. New match!");
+        assert_eq!(loaded_summary(1, 1), "Loaded 1 word. New match!");
+    }
+
     #[test]
     fn the_subtitle_names_the_difficulty_being_played() {
         for difficulty in Difficulty::ALL {
             let game = Game::new(difficulty);
+            let category = game.category().expect("every bundled word has one");
 
-            assert_eq!(subtitle(&game), difficulty.label());
+            assert_eq!(
+                subtitle(&game),
+                format!("{} · {category}", difficulty.label())
+            );
         }
     }
 
     #[test]
     fn a_list_of_your_own_has_no_difficulty_to_name() {
         // `Game::difficulty` is `None` for exactly one reason, so the title
-        // bar says which state it is in rather than going blank.
+        // bar says which state it is in rather than going blank. A plain
+        // `.txt` has no name and no categories either, so this is the whole
+        // line rather than half of it.
         assert_eq!(subtitle(&two_word_game()), CUSTOM_LIST_SUBTITLE);
     }
 

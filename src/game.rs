@@ -331,6 +331,13 @@ pub struct Game {
     remaining_words: Vec<Word>,
     /// How many words the match started with, for "word 3 of 10" style UI.
     total_words: usize,
+    /// How many playable words the pack held, before the match drew from it.
+    /// Only interesting when it is larger than `total_words`, which is the
+    /// whole point of a pack bigger than a match.
+    pack_words: usize,
+    /// What the pack called itself, or empty for one that did not say. The
+    /// view shows it in place of its own "Custom word list" wording.
+    pack_name: String,
     /// The current word, uppercased, with whatever its pack knows about it.
     current: Word,
     // The Java version stored shared `HangmanCharacter` objects in both the
@@ -418,18 +425,20 @@ impl Game {
 
     fn from_pack_with_rng(pack: Pack, rng: StdRng) -> Result<Self, EmptyWordList> {
         let budget = budget_for(None, pack.guess_budget);
+        let name = pack.name.clone();
         let words = pack.into_words();
         if words.is_empty() {
             return Err(EmptyWordList);
         }
-        Ok(Self::start_with(None, budget, words, rng))
+        Ok(Self::start_with(None, budget, name, words, rng))
     }
 
     /// Shared constructor body for a pack: sanitize it, ask it for its budget,
     /// and start a match on it.
     fn start(difficulty: Option<Difficulty>, pack: Pack, rng: StdRng) -> Self {
         let budget = budget_for(difficulty, pack.guess_budget);
-        Self::start_with(difficulty, budget, pack.into_words(), rng)
+        let name = pack.name.clone();
+        Self::start_with(difficulty, budget, name, pack.into_words(), rng)
     }
 
     /// Shared constructor body. `words` must already be sanitized and non-empty
@@ -438,15 +447,19 @@ impl Game {
     fn start_with(
         difficulty: Option<Difficulty>,
         guess_budget: usize,
+        pack_name: String,
         words: Vec<Word>,
         mut rng: StdRng,
     ) -> Self {
+        let pack_words = words.len();
         let words = draw_match(words, &mut rng);
         let total_words = words.len();
         let mut game = Game {
             difficulty,
             remaining_words: words,
             total_words,
+            pack_words,
+            pack_name,
             current: Word::bare(String::new()),
             guessed: BTreeSet::new(),
             wrong_guesses: 0,
@@ -734,25 +747,30 @@ impl Game {
     /// the word on the board and charge nothing for a file that would not load.
     pub fn set_pack(&mut self, pack: Pack) -> Result<(), EmptyWordList> {
         let budget = budget_for(None, pack.guess_budget);
+        let name = pack.name.clone();
         let words = pack.into_words();
         if words.is_empty() {
             return Err(EmptyWordList);
         }
-        self.reset_with(None, budget, words);
+        self.reset_with(None, budget, name, words);
         Ok(())
     }
 
     fn reset(&mut self, difficulty: Option<Difficulty>, pack: Pack) {
         let budget = budget_for(difficulty, pack.guess_budget);
-        self.reset_with(difficulty, budget, pack.into_words());
+        let name = pack.name.clone();
+        self.reset_with(difficulty, budget, name, pack.into_words());
     }
 
     fn reset_with(
         &mut self,
         difficulty: Option<Difficulty>,
         guess_budget: usize,
+        pack_name: String,
         words: Vec<Word>,
     ) {
+        self.pack_words = words.len();
+        self.pack_name = pack_name;
         let words = draw_match(words, &mut self.rng);
         self.difficulty = difficulty;
         self.guess_budget = guess_budget;
@@ -905,6 +923,24 @@ impl Game {
     /// How many words the match started with.
     pub fn total_words(&self) -> usize {
         self.total_words
+    }
+
+    /// How many playable words the pack held.
+    ///
+    /// At least [`Game::total_words`], and more than it whenever the pack is
+    /// bigger than a match — which every bundled pack now is. The view says so
+    /// when a list is loaded, because "loaded two hundred words" and "playing
+    /// ten of them" are both true and only one of them is obvious.
+    pub fn pack_words(&self) -> usize {
+        self.pack_words
+    }
+
+    /// What the pack called itself, or `None` for one that did not say.
+    ///
+    /// Empty for a plain `.txt`, which has nowhere to put a name, so the view
+    /// has its own wording to fall back on.
+    pub fn pack_name(&self) -> Option<&str> {
+        Some(self.pack_name.as_str()).filter(|name| !name.is_empty())
     }
 
     /// Which word of the match is on screen, 1-based — the "3" in "word 3 of 10".
