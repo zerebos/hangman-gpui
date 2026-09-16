@@ -136,7 +136,11 @@ const KEY_GAP: Pixels = px(6.);
 /// about it: the letter cells are large and loud, and a small italic sentence
 /// tucked straight underneath them looks like an afterthought that did not
 /// quite fit.
-const CLUE_TOP_GAP: Pixels = px(8.);
+///
+/// Twelve rather than eight, picked by eye against the real window: eight was
+/// enough to be a gap and not enough to be a separation, which on a row of
+/// 42px letter cells reads as a mistake rather than a margin.
+const CLUE_TOP_GAP: Pixels = px(12.);
 
 /// The label column of the per-difficulty breakdown, sized for its own
 /// "DIFFICULTY" heading rather than for the four short names under it.
