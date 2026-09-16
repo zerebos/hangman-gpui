@@ -77,7 +77,7 @@ const CUSTOM_LIST_SUBTITLE: &str = "Custom word list";
 /// real one: a hint spends a wrong guess, which is a body part on the gallows
 /// and ten points off the word.
 ///
-/// None of the three names its chord any more. Every toolbar button that has
+/// None of these three names its chord any more. Every toolbar button that has
 /// one is built with `tooltip_with_action`, which draws the binding the app
 /// actually registered as a `Kbd` chip beside the text — so the chord is read
 /// out of the keymap rather than typed twice, and it spells itself the way the
@@ -2375,7 +2375,7 @@ impl HangmanView {
                     .filter_map(|hint| {
                         // No binding in the keymap, no entry: an unlabelled promise is
                         // worse than nothing. Unreachable while `main.rs` binds all
-                        // three, which is the point of asking rather than assuming.
+                        // four, which is the point of asking rather than assuming.
                         let kbd = shortcut_kbd(hint.shortcut, window)?;
                         Some(
                             h_flex()

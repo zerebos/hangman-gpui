@@ -32,9 +32,9 @@ engine (with 64 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (30 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (13
+(35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (16
 more), and [`src/ui/`](src/ui/) is everything GPUI — plus the sixty-two tests
-its own pure helpers have grown. That is 229 tests, and
+its own pure helpers have grown. That is 232 tests, and
 `cargo test` runs the lot in well under a second. The word packs and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.

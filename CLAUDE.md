@@ -41,7 +41,7 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 229 tests and finishes in under a second, because **not one of
+`cargo test` is 232 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
@@ -81,7 +81,7 @@ does.
 ## Layout
 
 - `src/words.rs` — the word-pack **file format**, and nothing else: `Word`,
-  `Pack`, the parsing and the sanitising, with 13 in-file tests. **No GPUI
+  `Pack`, the parsing and the sanitising, with 16 in-file tests. **No GPUI
   types**, like `game.rs`. It is also where the serde derives for a word live,
   so `game.rs` needs none — the same split `stats.rs` has for the score. Three
   rules in it are load-bearing and each has a test: a **bundled** pack that

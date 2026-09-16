@@ -79,12 +79,29 @@ impl Word {
     }
 
     /// Trimmed and uppercased, as the game plays it.
+    ///
+    /// A `category` or `clue` that is present but **blank** becomes `None`
+    /// here, so that "the pack said nothing" and "the pack said nothing
+    /// useful" are the same state from this point on. Everything downstream
+    /// asks `is_some()` and nothing re-checks for emptiness: without this, a
+    /// `"clue": ""` lights the Clue button up, spends the one press it has,
+    /// and reveals an empty line, and a `"category": ""` puts a trailing `·`
+    /// in the title bar.
     fn normalized(&self) -> Self {
         Self {
             word: self.word.trim().to_ascii_uppercase(),
-            category: self.category.clone(),
-            clue: self.clue.clone(),
+            category: Self::said_something(&self.category),
+            clue: Self::said_something(&self.clue),
         }
+    }
+
+    /// The field, trimmed, or `None` if there was nothing in it.
+    fn said_something(field: &Option<String>) -> Option<String> {
+        field
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
     }
 
     /// Is there anything in here to guess?
@@ -137,6 +154,15 @@ impl Pack {
     /// is malformed or shaped wrongly. The line branch cannot fail — every file
     /// is *some* list of lines, even if none of them turn out to be playable.
     pub fn parse(text: &str) -> Result<Self, PackError> {
+        // The byte-order mark has to come off before either branch sees the
+        // text. `trim_start` does not take it: U+FEFF is not whitespace in
+        // Unicode, so a BOM'd pack would fail the `{` test, fall to the line
+        // branch, and load `"word": "Laptop",` and its neighbours as words —
+        // silently, which is the worst way for it to go wrong. Windows editors
+        // write one by default, so this is the common case rather than an
+        // exotic one. serde_json refuses a leading BOM too, so stripping it
+        // here fixes both halves at once.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         if text.trim_start().starts_with('{') {
             serde_json::from_str(text).map_err(PackError)
         } else {
@@ -293,6 +319,43 @@ mod tests {
         let pack = Pack::parse("\n  \t{ \"words\": [{ \"word\": \"Alpha\" }] }")
             .expect("leading whitespace is skipped");
         assert_eq!(pack.words, vec![Word::bare("Alpha")]);
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_turn_a_pack_into_a_word_list() {
+        // U+FEFF is not whitespace, so `trim_start` leaves it and the `{` test
+        // fails without the explicit strip. Windows editors write one by
+        // default, and the failure is silent: every line of the JSON becomes a
+        // "word".
+        let pack =
+            Pack::parse("\u{feff}{ \"name\": \"Pets\", \"words\": [{ \"word\": \"Cat\" }] }")
+                .expect("a BOM is stripped before the format is sniffed");
+        assert_eq!(pack.name, "Pets");
+        assert_eq!(pack.words, vec![Word::bare("Cat")]);
+    }
+
+    #[test]
+    fn a_blank_category_or_clue_is_the_same_as_not_having_one() {
+        // Everything downstream asks `is_some()` and nothing re-checks for
+        // emptiness, so a present-but-empty field would light the Clue button
+        // up and reveal nothing, and would put a trailing separator in the
+        // title bar.
+        let words =
+            Pack::parse(r#"{ "words": [{ "word": "Alpha", "category": "", "clue": "   " }] }"#)
+                .expect("valid JSON")
+                .into_words();
+        assert_eq!(words, vec![Word::bare("ALPHA")]);
+    }
+
+    #[test]
+    fn a_category_or_clue_with_something_in_it_is_trimmed_rather_than_dropped() {
+        let words = Pack::parse(
+            r#"{ "words": [{ "word": "Alpha", "category": "  Letters  ", "clue": " The first. " }] }"#,
+        )
+        .expect("valid JSON")
+        .into_words();
+        assert_eq!(words[0].category.as_deref(), Some("Letters"));
+        assert_eq!(words[0].clue.as_deref(), Some("The first."));
     }
 
     #[test]
