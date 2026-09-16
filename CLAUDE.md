@@ -41,17 +41,18 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 195 tests and finishes in under a second, because **not one of
-them opens a window, needs an `App`, or touches the platform.** For the four
+`cargo test` is 229 tests and finishes in under a second, because **not one of
+them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
 a guarantee — the view and all its gpui imports are in the same file as the
-tests, and its fifty-one only reach free functions that take plain data and
+tests, and its sixty-two only reach free functions that take plain data and
 return plain data: `shortcut_legend` from item 7, `plural` / `points` /
 `reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
 `guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
 `word_being_abandoned` from item 9, `switch_difficulty` / `load_words` from
-item 13, and `percent` / `shake_offset` / `Reveal::progress` / `Reveal::span` /
+item 13, `can_show_clue` / `clue_tooltip` / `loaded_summary` from item 3, and
+`percent` / `shake_offset` / `Reveal::progress` / `Reveal::span` /
 `to_rect` / `to_bounds` alongside them. The item 13 pair is the one that takes
 a `&mut Game` and changes it rather than only reading — which is still inside
 the rule, because the rule is about needing no window, no `App` and no
@@ -79,8 +80,31 @@ does.
 
 ## Layout
 
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 54 unit
-  tests in-file. Keep it that way; UI work should not need to touch it. Its
+- `src/words.rs` — the word-pack **file format**, and nothing else: `Word`,
+  `Pack`, the parsing and the sanitising, with 13 in-file tests. **No GPUI
+  types**, like `game.rs`. It is also where the serde derives for a word live,
+  so `game.rs` needs none — the same split `stats.rs` has for the score. Three
+  rules in it are load-bearing and each has a test: a **bundled** pack that
+  will not parse *panics* (`Pack::bundled`), which is the opposite of the
+  `settings.rs` rule on purpose — a settings file we cannot read is the
+  player's, a word pack we cannot read is ours; **unknown keys are ignored
+  rather than refused**, which with `#[serde(default)]` on every optional field
+  is what stands in for a version number, so don't add `deny_unknown_fields`
+  and don't add a `version` key; and `Pack::parse` picks JSON or
+  one-word-per-line from the text's **first character**, never from the file
+  name, because the picker has no extension filter and a player's naming is not
+  ours to police. `Word` derives `Serialize` as well as `Deserialize` with no
+  caller yet — that is for item 11, which serialises the pool still to play.
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 64 unit
+  tests in-file. Keep it that way; UI work should not need to touch it. Since
+  item 3 a match is `MATCH_WORDS` (10) words *drawn* from the pack by
+  `draw_match` rather than the whole pack, so `total_words` is the match and
+  `pack_words` is the pack — the two were the same number before it, and
+  anything that still conflates them is now wrong. `budget_for` takes the
+  pack's wish as well as the difficulty: a **loaded** pack may state a
+  `guess_budget` and gets it clamped into 6..=10, a pack reached through a
+  difficulty pill may not, because the four numbers below are the ladder and a
+  downloaded file does not get to bend it. Its
   `words_won`/`words_lost` are *per-match* counters that exist only so
   `finish_match` can derive a `MatchOutcome`; they reset with the match, and
   they are not a score. The guess budget lives here too and is per-difficulty
@@ -127,6 +151,15 @@ does.
   predicate the UI greys its button out on: with two guesses in hand before the
   charge, a hint can never be the guess that *loses* a word, so `hint` checks
   the win and never the loss.
+  The **category and clue** a word carries are read off here by `category()` /
+  `clue()`, and both are safe to show *during* play — a guarantee held up by
+  `no_bundled_clue_gives_its_own_word_away` rather than by review: it checks
+  every bundled category and clue for the word's own letters and for its first
+  six, and it caught two while the content was being written. Nothing here
+  tracks whether a clue has been *read*, because nothing about reading one is
+  scored or charged; that flag is the view's (`clue_shown`), which is why
+  `shortcut_legend` takes it as an argument rather than reading it off the
+  game.
 - `src/ui/mod.rs` — the single view. `src/ui/gallows.rs` — the element that
   paints the gallows. `HangmanView` itself is not testable, but the rules it
   reads off the game are: every helper that needed nothing but a `&Game` (and,
@@ -154,7 +187,13 @@ does.
 - `src/stats.rs` — points, streaks and the lifetime tally, with 30 in-file
   tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
   for the score live so that `game.rs` needs none: `Difficulty` is mapped by
-  hand there, exactly as `settings.rs` does it. `Stats` is the persisted value,
+  hand there, exactly as `settings.rs` does it. Note what a custom pack can and
+  cannot reach from here, because it is the answer to "should a pack be allowed
+  to set X": a pack may move `remaining_guesses` (6..=10) but never `weight`,
+  which stays 1 for anything with no difficulty — so the most a pack can score
+  itself is 150 a word, exactly Easy's rate and the lowest of the four. That
+  bound is why `guess_budget` is safe to honour and why a pack-declared
+  *weight* (roadmap item 16) would not be. `Stats` is the persisted value,
   `Session` is what the view holds, and all the arithmetic is in here rather
   than in the UI. The streak spans matches, difficulties and launches on
   purpose — only a lost word ends it — so nothing in `game.rs` may reset it.
