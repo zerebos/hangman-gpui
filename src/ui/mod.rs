@@ -130,6 +130,14 @@ const KEY_SIZE: Pixels = px(42.);
 /// The gap between keys, and between the cells of the word.
 const KEY_GAP: Pixels = px(6.);
 
+/// The extra room above the clue, on top of the word panel's own `gap_2`.
+///
+/// Without it the clue reads as another row of the word rather than as a note
+/// about it: the letter cells are large and loud, and a small italic sentence
+/// tucked straight underneath them looks like an afterthought that did not
+/// quite fit.
+const CLUE_TOP_GAP: Pixels = px(8.);
+
 /// The label column of the per-difficulty breakdown, sized for its own
 /// "DIFFICULTY" heading rather than for the four short names under it.
 const BREAKDOWN_LABEL_WIDTH: Pixels = px(88.);
@@ -656,27 +664,26 @@ enum KeyState {
     OutOfPlay,
 }
 
-/// What the title bar shows beside the wordmark: where the word came from,
-/// and what kind of thing it is.
+/// What the title bar shows beside the wordmark: where the word came from.
 ///
-/// The category is safe to show while the word is still in play — there is a
-/// test in `game.rs` that no bundled category or clue contains its own word —
-/// and it is the whole reason a pack carries one. A pack that says nothing
-/// leaves the line exactly as it was before packs existed.
+/// The difficulty, or the pack's own name, or this module's wording for a pack
+/// that did not give one. That order is deliberate: a pack reached through a
+/// pill is always called by the pill's name, whatever the file says, so a
+/// downloaded pack cannot relabel the difficulty ladder.
 ///
-/// The list half is the difficulty, or the pack's own name, or this module's
-/// wording for a pack that did not give one. That order is deliberate: a pack
-/// reached through a pill is always called by the pill's name, whatever the
-/// file says, so a downloaded pack cannot relabel the difficulty ladder.
+/// The word's **category** used to hang off the end of this line and does not
+/// any more — it is on the word panel's own heading row instead, beside the
+/// thing it describes. The title bar is for what lasts a whole match; the
+/// category changes with every word, which is what made it the odd one out.
+/// One consequence worth knowing: this line no longer varies inside a match,
+/// so it could be a borrow rather than a `String` if the allocation ever
+/// mattered.
 fn subtitle(game: &Game) -> String {
-    let list = match game.difficulty() {
+    match game.difficulty() {
         Some(difficulty) => difficulty.label(),
         None => game.pack_name().unwrap_or(CUSTOM_LIST_SUBTITLE),
-    };
-    match game.category() {
-        Some(category) => format!("{list} · {category}"),
-        None => list.to_string(),
     }
+    .to_string()
 }
 
 /// Whether [`HangmanView::show_clue`] would put anything new on screen.
@@ -1918,28 +1925,40 @@ impl HangmanView {
             .gap_2()
             .px_5()
             .py_3()
-            .child(eyebrow("THE WORD", cx))
-            // Under the eyebrow and above the row, so revealing it pushes the
-            // letters down rather than shifting the panel's other children:
-            // the keyboard below is what the eye is on while a word is live.
+            // The heading row carries the word's category on its right, the
+            // way the keyboard's `LETTERS` row carries the guess count. It
+            // belongs here rather than on the title bar because it describes
+            // *this word* and changes with every one; the title bar is for
+            // what lasts a whole match.
             //
-            // Gated on the clue itself rather than on `clue_shown` alone. The
-            // flag can only be true for a word that has one — `show_clue`
-            // checks, and every path that deals a word clears it — but the
-            // failure if that ever stopped holding is an empty italic line
-            // with a gap above it, which reads as a layout bug rather than as
-            // the missing invariant it would be.
-            .when_some(
-                self.clue_shown.then(|| self.game.clue()).flatten(),
-                |this, clue| {
-                    this.child(
-                        div()
-                            .text_sm()
-                            .italic()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(clue.to_string()),
-                    )
-                },
+            // Showing it while the word is still in play is safe, and that is
+            // a test rather than a judgement: `game.rs` checks every bundled
+            // category and clue for the word's own letters and for its first
+            // six (`no_bundled_clue_gives_its_own_word_away`).
+            //
+            // Nothing on this row appears or disappears mid-word, so it never
+            // changes height: a pack that gives no category simply leaves the
+            // right-hand side empty for the whole match. `min_w_0` is still
+            // wanted on the category, because without it the text's min-content
+            // width is a floor the flex row cannot go under — a long category
+            // would widen the row past the panel rather than wrap inside it.
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .justify_between()
+                    .items_baseline()
+                    .child(eyebrow("THE WORD", cx))
+                    .when_some(self.game.category(), |this, category| {
+                        this.child(
+                            div()
+                                .min_w_0()
+                                .text_xs()
+                                .text_right()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(category.to_string()),
+                        )
+                    }),
             )
             .child(if wrong == 0 {
                 row.into_any_element()
@@ -1962,6 +1981,33 @@ impl HangmanView {
                 )
                 .into_any_element()
             })
+            // Under the letters rather than above them, centred on the word it
+            // explains, and held off the cells by [`CLUE_TOP_GAP`]. Below is
+            // where it moves least: the letters and the heading keep their
+            // places when it appears, and only the keyboard below the panel
+            // shifts — which it would have done from either position, since
+            // that is a different panel.
+            //
+            // Gated on the clue itself rather than on `clue_shown` alone. The
+            // flag can only be true for a word that has one — `show_clue`
+            // checks, and every path that deals a word clears it — but the
+            // failure if that ever stopped holding is an empty italic line
+            // with a gap above it, which reads as a layout bug rather than as
+            // the missing invariant it would be.
+            .when_some(
+                self.clue_shown.then(|| self.game.clue()).flatten(),
+                |this, clue| {
+                    this.child(
+                        div()
+                            .mt(CLUE_TOP_GAP)
+                            .text_sm()
+                            .italic()
+                            .text_center()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(clue.to_string()),
+                    )
+                },
+            )
     }
 
     /// One letter key, dressed for whichever state it is in.
@@ -2766,8 +2812,34 @@ mod tests {
     }
 
     #[test]
-    fn the_subtitle_names_the_category_beside_the_list() {
-        assert_eq!(subtitle(&clued_game()), "Fixtures · Letters");
+    fn the_subtitle_names_the_list_and_leaves_the_category_to_the_word_panel() {
+        // `clued_game`'s word carries the category "Letters". It used to be
+        // appended here; it is on the word panel's heading row now, so this
+        // line is the pack's name and nothing else.
+        let game = clued_game();
+        assert_eq!(game.category(), Some("Letters"));
+        assert_eq!(subtitle(&game), "Fixtures");
+    }
+
+    #[test]
+    fn the_subtitle_does_not_move_when_the_word_does() {
+        // The point of taking the category off this line: it is a fact about
+        // the match, so it has to read the same for every word in one. A
+        // bundled pack gives each word its own category, which is exactly what
+        // would make it flicker.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        let first = subtitle(&game);
+        let mut categories = vec![game.category().map(str::to_owned)];
+        for _ in 0..3 {
+            game.give_up();
+            assert!(game.new_game(), "a ten-word match has more words than this");
+            categories.push(game.category().map(str::to_owned));
+            assert_eq!(subtitle(&game), first);
+        }
+        // Not a tautology only because the categories really do differ: if
+        // they were all the same the assertion above would prove nothing.
+        categories.dedup();
+        assert!(categories.len() > 1, "these words all share a category");
     }
 
     #[test]
@@ -2777,7 +2849,7 @@ mod tests {
                 .expect("valid JSON"),
         )
         .expect("one word is not an empty pack");
-        assert_eq!(subtitle(&game), format!("{CUSTOM_LIST_SUBTITLE} · Letters"));
+        assert_eq!(subtitle(&game), CUSTOM_LIST_SUBTITLE);
     }
 
     #[test]
@@ -2787,12 +2859,7 @@ mod tests {
         // the ladder by calling itself something else.
         for difficulty in Difficulty::ALL {
             let game = Game::with_seed(difficulty, 3);
-            assert!(
-                subtitle(&game).starts_with(difficulty.label()),
-                "{} became {}",
-                difficulty.label(),
-                subtitle(&game)
-            );
+            assert_eq!(subtitle(&game), difficulty.label());
         }
     }
 
@@ -2838,12 +2905,7 @@ mod tests {
     fn the_subtitle_names_the_difficulty_being_played() {
         for difficulty in Difficulty::ALL {
             let game = Game::new(difficulty);
-            let category = game.category().expect("every bundled word has one");
-
-            assert_eq!(
-                subtitle(&game),
-                format!("{} · {category}", difficulty.label())
-            );
+            assert_eq!(subtitle(&game), difficulty.label());
         }
     }
 
@@ -2851,8 +2913,7 @@ mod tests {
     fn a_list_of_your_own_has_no_difficulty_to_name() {
         // `Game::difficulty` is `None` for exactly one reason, so the title
         // bar says which state it is in rather than going blank. A plain
-        // `.txt` has no name and no categories either, so this is the whole
-        // line rather than half of it.
+        // `.txt` has no name to use instead.
         assert_eq!(subtitle(&two_word_game()), CUSTOM_LIST_SUBTITLE);
     }
 

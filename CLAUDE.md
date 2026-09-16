@@ -41,12 +41,12 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 232 tests and finishes in under a second, because **not one of
+`cargo test` is 233 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
 a guarantee — the view and all its gpui imports are in the same file as the
-tests, and its sixty-two only reach free functions that take plain data and
+tests, and its sixty-three only reach free functions that take plain data and
 return plain data: `shortcut_legend` from item 7, `plural` / `points` /
 `reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
 `guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
@@ -152,7 +152,8 @@ does.
   charge, a hint can never be the guess that *loses* a word, so `hint` checks
   the win and never the loss.
   The **category and clue** a word carries are read off here by `category()` /
-  `clue()`, and both are safe to show *during* play — a guarantee held up by
+  `clue()` — the view puts the category on the word panel's heading row and the
+  clue under the letters, and both are safe to show *during* play — a guarantee held up by
   `no_bundled_clue_gives_its_own_word_away` rather than by review: it checks
   every bundled category and clue for the word's own letters and for its first
   six, and it caught two while the content was being written. Nothing here

@@ -33,8 +33,8 @@ keeps the streak (30 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
 (35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (16
-more), and [`src/ui/`](src/ui/) is everything GPUI — plus the sixty-two tests
-its own pure helpers have grown. That is 232 tests, and
+more), and [`src/ui/`](src/ui/) is everything GPUI — plus the sixty-three tests
+its own pure helpers have grown. That is 233 tests, and
 `cargo test` runs the lot in well under a second. The word packs and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -275,14 +275,15 @@ up. A hint *can* finish a word, and when it does you win.
 ## Clues
 
 `Clue` — the toolbar button, or `Ctrl+L` — shows a sentence about what the word
-*means*, and costs you **nothing**.
+*means*, centred under the letters, and costs you **nothing**.
 
 That is not an oversight. The currency in this game is `remaining_guesses`, and
 it is about letters: a hint is priced because it hands you one. A clue tells you
 what you are looking for and leaves you to spell it, so there is no guess to
 charge. The word's **category** is free for the same reason and does not even
-need asking for — it sits beside the difficulty in the title bar, so `Easy`
-reads `Easy · Food` while you play.
+need asking for — it sits on the right of the word panel's own `THE WORD`
+heading, opposite the label, so you can see that you are looking for something
+in `Food` without asking for anything.
 
 Neither ever gives the answer away. There is a test over the bundled packs that
 no category and no clue contains the word it belongs to, or even its first six
@@ -320,7 +321,7 @@ with `{` is parsed as a pack — so a misnamed file still works.
 | `name` | What the title bar calls the list. A pack you load uses it in place of `Custom word list`; one reached through a difficulty pill is always called by the pill. |
 | `guess_budget` | How many wrong guesses the pack wants to allow, pulled into 6..=10. Only honoured for a pack you load: the difficulty ladder is not a pack's to bend. |
 | `words[].word` | The word. Spaces, slashes and punctuation all survive; only A–Z is guessable. |
-| `words[].category` | Shown beside the difficulty while the word is in play. |
+| `words[].category` | Shown on the word panel's heading row while the word is in play. |
 | `words[].clue` | Shown when you press `Clue`. |
 
 Keys the game has never heard of are **ignored rather than refused**, and every
@@ -543,8 +544,8 @@ matter.
   `.json` packs, each word carrying a category and a clue, read by serde the way
   `settings.json` is. A match is ten words *drawn* from a pack rather than the
   whole of it, so the same difficulty played twice is not the same ten words
-  reshuffled; the category shows beside the difficulty for free and the clue is
-  a button that costs nothing. A pack you load may state its own guess budget
+  reshuffled; the category shows above the word for free and the clue is a
+  button that costs nothing. A pack you load may state its own guess budget
   and its own name. See [Word packs](#word-packs) and [Clues](#clues).
 
 - **4. Difficulty that changes the guess budget.** `Difficulty::guess_budget` is
