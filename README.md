@@ -469,7 +469,7 @@ commit messages, pull requests and `CLAUDE.md` all cite these by number.
   deliberately not on this list: item 11 closes that hole by remembering the
   word instead of asking about it, and the two are alternatives.
 
-The next three came out of the item 3 discussion and are **to be considered**
+The next four came out of the item 3 discussion and are **to be considered**
 rather than agreed: each is worth doing only if the thing behind it turns out to
 matter.
 
@@ -499,6 +499,32 @@ matter.
   for no difficulty at all. The derived version has no such problem, because the
   words have to earn it. That is an argument for the algorithmic half, not
   against the item.
+- **17. A price for the clue.** The clue is free today, and free is defensible:
+  it says what the word *means* and leaves you to spell it, so it costs no
+  letters and the currency here is letters. What argues against it is that the
+  clues are not worth the same to each other. "A computer you can close." hands
+  you `Laptop`; "The state of being impassable; the adjective it is built on is
+  as obscure as it is." tells you almost nothing you can act on. A flat price
+  cannot express that difference — it would overcharge for the second to be
+  fair about the first — so the question is really *which* price, and there are
+  three shapes:
+  - **A flat wrong guess**, the way `Ctrl+H` is priced. One line to write, and
+    it is the one that ignores the asymmetry entirely.
+  - **A price derived from the clue**, the same idea as item 16's algorithmic
+    weight: something the content earns rather than declares, from the clue's
+    length, or from how much of the word it gives away.
+  - **A price the pack states, per word.** Honest about the fact that only the
+    author knows how much a clue gives away, and the only one of the three
+    where a word with a strong clue and a word with a weak one can be charged
+    differently. It is also the one that reopens the question the `guess_budget`
+    bound settles for everything else: a pack that prices every clue at zero is
+    a pack that scores at full rate with a free answer attached, so a per-word
+    price needs a floor the way the budget has a clamp.
+
+  Worth noting what makes this cheap to defer: the clue is currently the only
+  thing in the game with no price at all, so adding one later takes nothing
+  away that a player had come to rely on in a scored sense — the score is
+  already computed as if the clue were free.
 
 ### Shipped
 
