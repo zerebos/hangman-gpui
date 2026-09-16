@@ -1011,6 +1011,100 @@ mod tests {
     }
 
     #[test]
+    fn every_bundled_pack_can_fill_a_whole_match() {
+        // A pack shorter than `MATCH_WORDS` is legal — a list someone typed out
+        // by hand is often shorter — but a *bundled* one being short would mean
+        // a match that quietly ends early on that difficulty and nowhere else.
+        for difficulty in Difficulty::ALL {
+            assert!(
+                pack_words(difficulty).len() >= MATCH_WORDS,
+                "{} has only {} words",
+                difficulty.label(),
+                pack_words(difficulty).len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_match_is_drawn_from_the_pack_rather_than_being_all_of_it() {
+        // The point of a pack bigger than a match: the same difficulty played
+        // twice is not the same words in a different order. Two seeds rather
+        // than two matches, so the assertion is about the draw and not about
+        // what the first match happened to remove.
+        let pack = pack_words(Difficulty::Easy);
+        assert!(
+            pack.len() > MATCH_WORDS,
+            "this test only says anything while the pack is bigger than a match"
+        );
+        let drawn = |seed| {
+            let mut game = Game::with_seed(Difficulty::Easy, seed);
+            let mut words = vec![game.word().to_string()];
+            while !game.is_match_over() {
+                game.give_up();
+                if game.new_game() {
+                    words.push(game.word().to_string());
+                }
+            }
+            words.sort();
+            words
+        };
+        assert_ne!(drawn(1), drawn(2), "two seeds drew the same ten words");
+    }
+
+    #[test]
+    fn no_bundled_clue_gives_its_own_word_away() {
+        // The standing rule from the abandon-tooltip near-miss: nothing shown
+        // *during* play may leak the answer, and a category and a clue are both
+        // shown during play. A clue naming its own word is the obvious way to
+        // break it, and a clue built on the same stem — "immeable" under
+        // `Immeability` — is the way it actually happened while these were
+        // being written. Six letters is where that stops being a coincidence
+        // and starts being most of a short word.
+        let letters_only = |text: &str| -> String {
+            text.chars()
+                .filter(char::is_ascii_alphabetic)
+                .collect::<String>()
+                .to_ascii_lowercase()
+        };
+        for difficulty in Difficulty::ALL {
+            for word in difficulty.pack().words {
+                let needle = letters_only(&word.word);
+                let haystack = letters_only(&format!(
+                    "{}{}",
+                    word.category.as_deref().unwrap_or_default(),
+                    word.clue.as_deref().unwrap_or_default()
+                ));
+                assert!(
+                    !haystack.contains(&needle),
+                    "{}'s clue names the word itself",
+                    word.word
+                );
+                if needle.len() >= 6 {
+                    assert!(
+                        !haystack.contains(&needle[..6]),
+                        "{}'s clue shares its first six letters",
+                        word.word
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_bundled_word_carries_a_category_and_a_clue() {
+        // Both are optional in the *format*, because a list typed out by hand
+        // has no reason to fill them in. The packs we ship are held to more
+        // than that: a word with no clue is a `Clue` button that does nothing
+        // for reasons the player cannot see.
+        for difficulty in Difficulty::ALL {
+            for word in difficulty.pack().words {
+                assert!(word.category.is_some(), "{} has no category", word.word);
+                assert!(word.clue.is_some(), "{} has no clue", word.word);
+            }
+        }
+    }
+
+    #[test]
     fn no_bundled_pack_repeats_a_word() {
         for difficulty in Difficulty::ALL {
             let mut words = pack_words(difficulty);
