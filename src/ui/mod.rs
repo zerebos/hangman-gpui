@@ -1922,15 +1922,25 @@ impl HangmanView {
             // Under the eyebrow and above the row, so revealing it pushes the
             // letters down rather than shifting the panel's other children:
             // the keyboard below is what the eye is on while a word is live.
-            .when(self.clue_shown, |this| {
-                this.child(
-                    div()
-                        .text_sm()
-                        .italic()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(self.game.clue().unwrap_or_default().to_string()),
-                )
-            })
+            //
+            // Gated on the clue itself rather than on `clue_shown` alone. The
+            // flag can only be true for a word that has one — `show_clue`
+            // checks, and every path that deals a word clears it — but the
+            // failure if that ever stopped holding is an empty italic line
+            // with a gap above it, which reads as a layout bug rather than as
+            // the missing invariant it would be.
+            .when_some(
+                self.clue_shown.then(|| self.game.clue()).flatten(),
+                |this, clue| {
+                    this.child(
+                        div()
+                            .text_sm()
+                            .italic()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(clue.to_string()),
+                    )
+                },
+            )
             .child(if wrong == 0 {
                 row.into_any_element()
             } else {
@@ -3111,11 +3121,13 @@ mod tests {
         // `assert_eq!(.., 1.)` and wonder why it fails.
         //
         // The bound is deliberately generous rather than derived from the
-        // bundled lists: `Sesquipedalianism` in `assets/words/insane.txt` is
-        // already 17 cells, a word list of your own has no length limit at
-        // all, and the rounding above is the one thing here that gets *worse*
-        // the further out the index goes. Forty is past anything a word row
-        // can show and the loop still costs nothing.
+        // bundled packs: `Floccinaucinihilipilification` in
+        // `assets/words/insane.json` is already 29 cells — it was 17 before
+        // item 3 filled the packs out, which is exactly why this was not
+        // derived — a word list of your own has no length limit at all, and
+        // the rounding above is the one thing here that gets *worse* the
+        // further out the index goes. Forty is past anything a word row can
+        // show and the loop still costs nothing.
         for reveal in [WIN_REVEAL, GUESS_REVEAL] {
             for index in 0..REVEAL_INDEX_SWEEP {
                 assert_eq!(reveal.progress(index, 0.), 0.);
