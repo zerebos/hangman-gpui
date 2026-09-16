@@ -520,8 +520,8 @@ actions!(hangman, [OpenWordList, ChangeWord, Hint, ShowClue]);
 
 /// One entry of the keyboard legend.
 ///
-/// The three chords are the original's `Game` menu accelerators plus `Ctrl+H`,
-/// and they are the app's standing shortcuts: always listed, greyed when the
+/// The four chords are the original's `Game` menu accelerators plus `Ctrl+H`
+/// and `Ctrl+L`, and they are the app's standing shortcuts: always listed, greyed when the
 /// key would currently do nothing, on the same reasoning that keeps the
 /// disabled `Hint` button on screen instead of hiding it. `NextWord` is the
 /// odd one out — it means something only once a word has ended — so it is
@@ -679,15 +679,20 @@ enum KeyState {
 /// any more — it is on the word panel's own heading row instead, beside the
 /// thing it describes. The title bar is for what lasts a whole match; the
 /// category changes with every word, which is what made it the odd one out.
-/// One consequence worth knowing: this line no longer varies inside a match,
-/// so it could be a borrow rather than a `String` if the allocation ever
-/// mattered.
-fn subtitle(game: &Game) -> String {
+/// Both arms are already string slices, and the common one is `&'static str`,
+/// so this hands back a [`SharedString`] rather than building a `String` on
+/// every frame: `render_title_bar` runs from `Render::render`, and a difficulty
+/// pill's label needs no allocation at all to get there. Only a pack that named
+/// itself pays for one, once per frame, and that is a `SmolStr` — short names
+/// live inline rather than on the heap.
+fn subtitle(game: &Game) -> SharedString {
     match game.difficulty() {
-        Some(difficulty) => difficulty.label(),
-        None => game.pack_name().unwrap_or(CUSTOM_LIST_SUBTITLE),
+        Some(difficulty) => SharedString::from(difficulty.label()),
+        None => match game.pack_name() {
+            Some(name) => SharedString::from(name.to_owned()),
+            None => SharedString::from(CUSTOM_LIST_SUBTITLE),
+        },
     }
-    .to_string()
 }
 
 /// Whether [`HangmanView::show_clue`] would put anything new on screen.
@@ -1505,7 +1510,7 @@ impl HangmanView {
                         // Outside the title bar, so — unlike the theme toggle —
                         // this needs no `.occlude()`: nothing behind it is
                         // waiting to turn the click into a window drag. The
-                        // same goes for the three buttons after it.
+                        // same goes for the four buttons after it.
                         Button::new("hint")
                             .small()
                             .ghost()

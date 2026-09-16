@@ -55,9 +55,9 @@ pub struct Word {
     /// The word to guess. Spaces, slashes and apostrophes are all fine; only
     /// ASCII letters are guessable, and everything else shows through.
     pub word: String,
-    /// What kind of thing it is — `"Food"`, `"College life"`. Shown beside the
-    /// difficulty while the word is in play, so it must never give the answer
-    /// away.
+    /// What kind of thing it is — `"Food"`, `"College life"`. Shown on the
+    /// right of the word panel's `THE WORD` heading while the word is in play,
+    /// so it must never give the answer away.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     /// A sentence about the word's meaning, shown only if the player asks for
@@ -85,8 +85,9 @@ impl Word {
     /// useful" are the same state from this point on. Everything downstream
     /// asks `is_some()` and nothing re-checks for emptiness: without this, a
     /// `"clue": ""` lights the Clue button up, spends the one press it has,
-    /// and reveals an empty line, and a `"category": ""` puts a trailing `·`
-    /// in the title bar.
+    /// and reveals an empty line, and a `"category": ""` leaves the word
+    /// panel's heading row with a right-hand side that is present and says
+    /// nothing.
     fn normalized(&self) -> Self {
         Self {
             word: self.word.trim().to_ascii_uppercase(),
@@ -198,6 +199,17 @@ impl Pack {
     /// test below parses all four, so it cannot reach a release.
     pub fn bundled(json: &'static str) -> Self {
         serde_json::from_str(json).expect("a bundled word pack must parse")
+    }
+
+    /// The pack's name with its surrounding blanks gone.
+    ///
+    /// Blank is absent here exactly as it is for a category or a clue (see
+    /// [`Word::said_something`]): `"name": "   "` is a pack that did not name
+    /// itself, not a pack called three spaces. Taking the name through this is
+    /// what lets [`crate::game::Game::pack_name`] go on testing emptiness
+    /// alone — nothing untrimmed reaches it, so it has nothing to re-check.
+    pub fn display_name(&self) -> &str {
+        self.name.trim()
     }
 
     /// The pack's words, trimmed, uppercased, and with the unplayable ones
@@ -338,8 +350,8 @@ mod tests {
     fn a_blank_category_or_clue_is_the_same_as_not_having_one() {
         // Everything downstream asks `is_some()` and nothing re-checks for
         // emptiness, so a present-but-empty field would light the Clue button
-        // up and reveal nothing, and would put a trailing separator in the
-        // title bar.
+        // up and reveal nothing, and would give the word panel's heading row a
+        // right-hand side that is there and empty.
         let words =
             Pack::parse(r#"{ "words": [{ "word": "Alpha", "category": "", "clue": "   " }] }"#)
                 .expect("valid JSON")

@@ -28,13 +28,13 @@ as the word list — a budget you can trade a guess out of for
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 64 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
+engine (with 65 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (30 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
 (35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (16
 more), and [`src/ui/`](src/ui/) is everything GPUI — plus the sixty-three tests
-its own pure helpers have grown. That is 233 tests, and
+its own pure helpers have grown. That is 234 tests, and
 `cargo test` runs the lot in well under a second. The word packs and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -318,7 +318,7 @@ with `{` is parsed as a pack — so a misnamed file still works.
 
 | Key | What it does |
 | --- | --- |
-| `name` | What the title bar calls the list. A pack you load uses it in place of `Custom word list`; one reached through a difficulty pill is always called by the pill. |
+| `name` | What the title bar calls the list. A pack you load uses it in place of `Custom word list`; one reached through a difficulty pill is always called by the pill. Blank or all-whitespace counts as not giving one. |
 | `guess_budget` | How many wrong guesses the pack wants to allow, pulled into 6..=10. Only honoured for a pack you load: the difficulty ladder is not a pack's to bend. |
 | `words[].word` | The word. Spaces, slashes and punctuation all survive; only A–Z is guessable. |
 | `words[].category` | Shown on the word panel's heading row while the word is in play. |

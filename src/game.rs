@@ -425,7 +425,7 @@ impl Game {
 
     fn from_pack_with_rng(pack: Pack, rng: StdRng) -> Result<Self, EmptyWordList> {
         let budget = budget_for(None, pack.guess_budget);
-        let name = pack.name.clone();
+        let name = pack.display_name().to_owned();
         let words = pack.into_words();
         if words.is_empty() {
             return Err(EmptyWordList);
@@ -437,7 +437,7 @@ impl Game {
     /// and start a match on it.
     fn start(difficulty: Option<Difficulty>, pack: Pack, rng: StdRng) -> Self {
         let budget = budget_for(difficulty, pack.guess_budget);
-        let name = pack.name.clone();
+        let name = pack.display_name().to_owned();
         Self::start_with(difficulty, budget, name, pack.into_words(), rng)
     }
 
@@ -747,7 +747,7 @@ impl Game {
     /// the word on the board and charge nothing for a file that would not load.
     pub fn set_pack(&mut self, pack: Pack) -> Result<(), EmptyWordList> {
         let budget = budget_for(None, pack.guess_budget);
-        let name = pack.name.clone();
+        let name = pack.display_name().to_owned();
         let words = pack.into_words();
         if words.is_empty() {
             return Err(EmptyWordList);
@@ -758,7 +758,7 @@ impl Game {
 
     fn reset(&mut self, difficulty: Option<Difficulty>, pack: Pack) {
         let budget = budget_for(difficulty, pack.guess_budget);
-        let name = pack.name.clone();
+        let name = pack.display_name().to_owned();
         self.reset_with(difficulty, budget, name, pack.into_words());
     }
 
@@ -939,6 +939,13 @@ impl Game {
     ///
     /// Empty for a plain `.txt`, which has nowhere to put a name, so the view
     /// has its own wording to fall back on.
+    ///
+    /// Testing emptiness is enough because the name arrives through
+    /// [`Pack::display_name`] and is trimmed before it is ever stored — a pack
+    /// calling itself `"   "` is stored as `""` and answered `None` here. Keep
+    /// that true at the call sites rather than trimming again in this method:
+    /// a blank name is meant to be indistinguishable from an absent one by the
+    /// time anything reads it.
     pub fn pack_name(&self) -> Option<&str> {
         Some(self.pack_name.as_str()).filter(|name| !name.is_empty())
     }
@@ -1425,6 +1432,27 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_that_names_itself_nothing_is_a_pack_with_no_name() {
+        // The same rule as a blank category or clue, one field over: blank and
+        // absent have to be the same state by the time anything reads it, or
+        // the view's fallback wording never gets its turn and the title bar
+        // shows three spaces.
+        for name in ["", "   ", "\t\n"] {
+            let pack = Pack::parse(&format!(
+                r#"{{ "name": {name:?}, "words": [{{ "word": "Alpha" }}] }}"#
+            ))
+            .expect("valid JSON");
+            let game = Game::from_pack(pack).expect("one word is not an empty pack");
+            assert_eq!(game.pack_name(), None, "{name:?} was taken as a name");
+        }
+        // And a name with something in it survives, trimmed.
+        let pack = Pack::parse(r#"{ "name": "  Pets  ", "words": [{ "word": "Alpha" }] }"#)
+            .expect("valid JSON");
+        let game = Game::from_pack(pack).expect("one word is not an empty pack");
+        assert_eq!(game.pack_name(), Some("Pets"));
+    }
+
+    #[test]
     fn a_match_never_repeats_a_word() {
         let mut game = Game::with_seed(Difficulty::Easy, 42);
         let pack = pack_words(Difficulty::Easy);
@@ -1448,12 +1476,28 @@ mod tests {
     #[test]
     fn the_same_seed_draws_the_same_match() {
         // The other half of the above: the draw has to be reproducible, or a
-        // seeded game stops being seeded.
+        // seeded game stops being seeded. All ten words rather than the first,
+        // because the first is dealt by `draw_match` and the other nine by the
+        // `deal_word` sequence after it — a regression in the second half
+        // would sail past a check on the first word alone.
         let words = |seed| {
-            let game = Game::with_seed(Difficulty::Easy, seed);
-            game.word().to_string()
+            let mut game = Game::with_seed(Difficulty::Easy, seed);
+            let mut seen = vec![game.word().to_string()];
+            while !game.is_match_over() {
+                game.give_up();
+                if game.new_game() {
+                    seen.push(game.word().to_string());
+                }
+            }
+            seen
         };
-        assert_eq!(words(7), words(7));
+        let first = words(7);
+        assert_eq!(first.len(), MATCH_WORDS);
+        assert_eq!(first, words(7));
+        // And not by dealing the same match to everyone: a seed that produced
+        // the same ten words as any other seed would satisfy the line above
+        // while proving nothing about the seed.
+        assert_ne!(first, words(8));
     }
 
     #[test]

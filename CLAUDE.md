@@ -41,7 +41,7 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 233 tests and finishes in under a second, because **not one of
+`cargo test` is 234 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
@@ -91,11 +91,18 @@ does.
   rather than refused**, which with `#[serde(default)]` on every optional field
   is what stands in for a version number, so don't add `deny_unknown_fields`
   and don't add a `version` key; and `Pack::parse` picks JSON or
-  one-word-per-line from the text's **first character**, never from the file
-  name, because the picker has no extension filter and a player's naming is not
-  ours to police. `Word` derives `Serialize` as well as `Deserialize` with no
+  one-word-per-line from the text's **first non-blank character**, never from
+  the file name, because the picker has no extension filter and a player's
+  naming is not ours to police. A leading byte-order mark is stripped before
+  that test: `trim_start` does not remove one (U+FEFF is not Unicode
+  whitespace), and Windows editors write one by default, so without the strip a
+  BOM'd pack silently loads its own JSON lines as words. **A pack's `name` is
+  taken through `Pack::display_name`, which trims it**, so `"name": "   "` is a
+  pack with no name and `Game::pack_name` can go on testing emptiness alone —
+  the same blank-is-absent rule `Word::said_something` applies to a category
+  and a clue. `Word` derives `Serialize` as well as `Deserialize` with no
   caller yet — that is for item 11, which serialises the pool still to play.
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 64 unit
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 65 unit
   tests in-file. Keep it that way; UI work should not need to touch it. Since
   item 3 a match is `MATCH_WORDS` (10) words *drawn* from the pack by
   `draw_match` rather than the whole pack, so `total_words` is the match and
