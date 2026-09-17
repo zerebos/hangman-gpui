@@ -41,7 +41,7 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 266 tests and finishes in under a second, because **not one of
+`cargo test` is 268 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
@@ -106,7 +106,7 @@ does.
   `Pack::into_words` is now a one-liner over — is the cleanup, and
   `settings::SavedMatch` writes the word and the pool still to play into
   `settings.json`.
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 83 unit
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 85 unit
   tests in-file. Keep it that way; UI work should not need to touch it. Since
   item 3 a match is `MATCH_WORDS` (10) words *drawn* from the pack by
   `draw_match` rather than the whole pack, so `total_words` is the match and
@@ -162,14 +162,17 @@ does.
   you had just won. `Game::resume` is the way back *and* the validator: the
   file it comes out of is one the player is invited to edit, so a snapshot is
   checked the way a pack off disk is, and a refusal costs a fresh deal rather
-  than a panic. Four checks, each with a test: the word and the pool go through
+  than a panic. Five checks, each with a test: the word and the pool go through
   `words::sanitize`; the **budget is re-derived through `budget_for` rather
   than restored**, so a hand edit cannot buy Easy's ten guesses at Insane's
   weight; `result` has to be one the rest of the state could have produced,
   which is also why it is *stored* rather than derived — a word given up on is
   lost with guesses in hand and letters still hidden, which is exactly what a
   word still in play looks like; and a resolved word with an empty pool behind
-  it is a *finished* match, which `snapshot` never writes. `total_words` is
+  it is a *finished* match, which `snapshot` never writes; and a resolved word
+  has to be *on* the per-match tally, since `end_game` counts it in the same
+  breath as it sets the result — without that check the word on the board falls
+  out of the count and `word_number` reports 0. `total_words` is
   recounted rather than stored, because derived state written down twice is
   derived state that can come back disagreeing with itself. `word_complete` is
   free rather than a method for the same reason the item 13 pair is: `resume`

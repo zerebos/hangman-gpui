@@ -553,6 +553,23 @@ impl Game {
             return None;
         }
 
+        // A resolved word is already on the per-match tally — `end_game` counts
+        // it in the same breath as it sets the result — so the counter matching
+        // that result cannot be zero. Unchecked, the word on the board falls out
+        // of the count altogether: `word_number` reports 0, so the panel reads
+        // "word 0 of 3"; the end-of-match line is short by one; and
+        // `finish_match` compares a tally the word never reached, which can
+        // hand the match to the wrong side. It is the same rule as `result`
+        // itself — a state the play could not have produced — one field over.
+        let counted = match snapshot.result {
+            Some(GameResult::Won) => snapshot.words_won > 0,
+            Some(GameResult::Lost) => snapshot.words_lost > 0,
+            None => true,
+        };
+        if !counted {
+            return None;
+        }
+
         // A resolved word with nothing behind it is a match that is *over*,
         // which is not a match in flight: there is no next word to deal and no
         // summary to show, so there is nothing here to resume into.
@@ -2457,6 +2474,45 @@ mod tests {
             };
 
             assert!(Game::resume(snapshot).is_none(), "{result:?}");
+        }
+    }
+
+    #[test]
+    fn a_resolved_word_missing_from_the_tally_is_not_resumed() {
+        let mut won = match_in_flight();
+        win_current_game(&mut won);
+        let mut lost = match_in_flight();
+        lost.give_up();
+
+        // Each is the *matching* counter zeroed, which is the only half that
+        // matters: a word that ended is on the tally, so the count for the way
+        // it ended cannot be nothing. Left in, the word falls out of
+        // `word_number` and out of the summary.
+        for (game, zeroed) in [(won, "words_won"), (lost, "words_lost")] {
+            let live = game.snapshot().expect("the match is still running");
+            let snapshot = Snapshot {
+                words_won: 0,
+                words_lost: 0,
+                ..live
+            };
+
+            assert!(Game::resume(snapshot).is_none(), "{zeroed} was zero");
+        }
+    }
+
+    #[test]
+    fn the_word_on_the_board_is_always_one_of_the_words_played() {
+        let mut lost = match_in_flight();
+        lost.give_up();
+
+        // The invariant the check above buys, on both sides of it: whatever a
+        // resumed match looks like, the word on the board is numbered, and it
+        // is numbered inside the match.
+        for game in [match_in_flight(), lost] {
+            let resumed = round_trip(&game);
+
+            assert!(resumed.word_number() >= 1);
+            assert!(resumed.word_number() <= resumed.total_words());
         }
     }
 
