@@ -10,15 +10,19 @@
 //!
 //! * A **game** is one word: you guess letters until you reveal the word (a
 //!   win) or run out of wrong guesses (a loss).
-//! * A **match** is one pass through a whole word list — ten games for the
-//!   bundled lists. Words are drawn at random *without replacement*, so a match
-//!   never repeats a word. When the list runs out, the match is over and is
-//!   scored as a [`MatchOutcome`] by comparing wins against losses.
+//! * A **match** is [`MATCH_WORDS`] games, drawn at random *without
+//!   replacement* from the pack's words, so a match never repeats a word and a
+//!   pack bigger than a match is not played out in one sitting. When the drawn
+//!   words run out, the match is over and is scored as a [`MatchOutcome`] by
+//!   comparing wins against losses.
 
 use std::collections::BTreeSet;
 
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
+
+use crate::gallows;
+use crate::words::{Pack, Word};
 
 /// The classic guess budget: six wrong guesses, a whole hangman and no more.
 ///
@@ -29,6 +33,19 @@ use rand::{RngExt, SeedableRng};
 /// word list loaded from a file is played by the original's rules, because
 /// nothing about the file says how hard it is meant to be.
 pub const DEFAULT_GUESS_BUDGET: usize = 6;
+
+/// How many words one match is played over.
+///
+/// Every list used to be played to the end, which was fine while a list was ten
+/// words: the match *was* the list. Packs are bigger than that now, and playing
+/// thirty words before a match can be scored is a different game — so a match
+/// draws this many and leaves the rest of the pack for the next one. Ten is the
+/// number the original's lists happened to hold, so a match is exactly as long
+/// as it has always been.
+///
+/// A pack with fewer words than this is played in full, which is what keeps a
+/// short list someone typed out by hand playable.
+pub const MATCH_WORDS: usize = 10;
 
 /// Which bundled word list a match is played from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -105,22 +122,27 @@ impl Difficulty {
         }
     }
 
-    /// The raw contents of this difficulty's word list.
+    /// The raw contents of this difficulty's word pack.
     ///
-    /// The four lists are baked into the binary with `include_str!`, so there
+    /// The four packs are baked into the binary with `include_str!`, so there
     /// are no data files to ship next to the executable.
-    fn raw_list(self) -> &'static str {
+    fn raw_pack(self) -> &'static str {
         match self {
-            Difficulty::Easy => include_str!("../assets/words/easy.txt"),
-            Difficulty::Medium => include_str!("../assets/words/med.txt"),
-            Difficulty::Hard => include_str!("../assets/words/hard.txt"),
-            Difficulty::Insane => include_str!("../assets/words/insane.txt"),
+            Difficulty::Easy => include_str!("../assets/words/easy.json"),
+            Difficulty::Medium => include_str!("../assets/words/med.json"),
+            Difficulty::Hard => include_str!("../assets/words/hard.json"),
+            Difficulty::Insane => include_str!("../assets/words/insane.json"),
         }
     }
 
-    /// This difficulty's words, one per line, already cleaned up.
-    pub fn words(self) -> Vec<String> {
-        sanitize_words(self.raw_list().lines().map(|line| line.to_string()))
+    /// This difficulty's pack, parsed.
+    ///
+    /// # Panics
+    ///
+    /// If the pack does not parse — see [`Pack::bundled`], and the test that
+    /// stops a broken one reaching a release.
+    pub fn pack(self) -> Pack {
+        Pack::bundled(self.raw_pack())
     }
 }
 
@@ -251,25 +273,47 @@ impl std::fmt::Display for EmptyWordList {
 
 impl std::error::Error for EmptyWordList {}
 
-/// Trim each line, drop the ones with nothing to guess, and uppercase the rest.
+/// The guess budget a match is played with.
 ///
-/// The bundled lists are already well behaved; this exists because the original
-/// let the player load any `.txt` file as a word list, and blank or
-/// punctuation-only lines would otherwise produce an unplayable "word".
-fn sanitize_words(words: impl IntoIterator<Item = String>) -> Vec<String> {
-    words
-        .into_iter()
-        .map(|word| word.trim().to_ascii_uppercase())
-        .filter(|word| word.chars().any(|c| c.is_ascii_alphabetic()))
-        .collect()
+/// A bundled difficulty's own [`Difficulty::guess_budget`] is the rule for it,
+/// and a pack reached *through* a difficulty does not get to argue: only a pack
+/// the player loaded is asked. That one may state a `guess_budget`, and
+/// otherwise gets the original's [`DEFAULT_GUESS_BUDGET`], since nothing else
+/// about a file says how hard it is meant to be.
+///
+/// A stated budget is clamped into [`gallows::CORE_PARTS`]`..=`[`gallows::PARTS`]`.len()`
+/// — 6..=10 — because outside that range a wrong guess stops being exactly one
+/// new body part, which is the constraint [`Difficulty::guess_budget`]'s own
+/// four numbers are chosen inside. A pack asking for 3, or for 40, is not
+/// refused: it is pulled to the nearest number the gallows can draw.
+fn budget_for(difficulty: Option<Difficulty>, pack_budget: Option<usize>) -> usize {
+    if let Some(difficulty) = difficulty {
+        return difficulty.guess_budget();
+    }
+    match pack_budget {
+        Some(budget) => budget.clamp(gallows::CORE_PARTS, gallows::PARTS.len()),
+        None => DEFAULT_GUESS_BUDGET,
+    }
 }
 
-/// The guess budget a match on `difficulty` is played with.
+/// Draw the words one match is played over, at most [`MATCH_WORDS`] of them.
 ///
-/// `None` — a word list the player loaded from a file — gets the original's
-/// [`DEFAULT_GUESS_BUDGET`], since nothing about a file says how hard it is.
-fn budget_for(difficulty: Option<Difficulty>) -> usize {
-    difficulty.map_or(DEFAULT_GUESS_BUDGET, Difficulty::guess_budget)
+/// A pack no bigger than a match is returned whole, in a new order that does
+/// not matter — [`Game::deal_word`] draws at random anyway. A bigger one is
+/// sampled without replacement, which is what stops a match being the whole
+/// pack and what makes the *next* match on the same pack a different ten
+/// words.
+///
+/// It draws from `rng`, so a seeded game picks the same ten every time, exactly
+/// as it picks the same order.
+fn draw_match(mut words: Vec<Word>, rng: &mut StdRng) -> Vec<Word> {
+    let take = words.len().min(MATCH_WORDS);
+    let mut drawn = Vec::with_capacity(take);
+    for _ in 0..take {
+        let index = rng.random_range(0..words.len());
+        drawn.push(words.swap_remove(index));
+    }
+    drawn
 }
 
 /// A hangman match in progress.
@@ -281,13 +325,21 @@ fn budget_for(difficulty: Option<Difficulty>) -> usize {
 pub struct Game {
     /// `None` once a custom word list has been loaded from a file.
     difficulty: Option<Difficulty>,
-    /// Words not yet played this match. A word is removed as it is dealt, which
-    /// is what stops a match from repeating a word.
-    remaining_words: Vec<String>,
+    /// Words not yet played this match — at most [`MATCH_WORDS`] of them, drawn
+    /// from the pack when the match started. A word is removed as it is dealt,
+    /// which is what stops a match from repeating a word.
+    remaining_words: Vec<Word>,
     /// How many words the match started with, for "word 3 of 10" style UI.
     total_words: usize,
-    /// The current word, uppercased.
-    word: String,
+    /// How many playable words the pack held, before the match drew from it.
+    /// Only interesting when it is larger than `total_words`, which is the
+    /// whole point of a pack bigger than a match.
+    pack_words: usize,
+    /// What the pack called itself, or empty for one that did not say. The
+    /// view shows it in place of its own "Custom word list" wording.
+    pack_name: String,
+    /// The current word, uppercased, with whatever its pack knows about it.
+    current: Word,
     // The Java version stored shared `HangmanCharacter` objects in both the
     // alphabet and the word, so marking a letter guessed mutated both at once.
     // Rust makes that kind of aliasing deliberately awkward, and it is not
@@ -314,7 +366,7 @@ pub struct Game {
 impl Game {
     /// Start a match on `difficulty`, seeded from the operating system.
     pub fn new(difficulty: Difficulty) -> Self {
-        Self::start(Some(difficulty), difficulty.words(), rand::make_rng())
+        Self::start(Some(difficulty), difficulty.pack(), rand::make_rng())
     }
 
     /// Start a match on `difficulty` with a fixed RNG seed.
@@ -324,7 +376,7 @@ impl Game {
     pub fn with_seed(difficulty: Difficulty, seed: u64) -> Self {
         Self::start(
             Some(difficulty),
-            difficulty.words(),
+            difficulty.pack(),
             StdRng::seed_from_u64(seed),
         )
     }
@@ -337,7 +389,29 @@ impl Game {
     ///
     /// Returns [`EmptyWordList`] if nothing playable survives that cleanup.
     pub fn from_words(words: Vec<String>) -> Result<Self, EmptyWordList> {
-        Self::from_words_with_rng(words, rand::make_rng())
+        Self::from_pack_with_rng(Pack::from_words(words), rand::make_rng())
+    }
+
+    /// Start a match on a word pack, e.g. one the player opened from disk.
+    ///
+    /// The pack-shaped half of [`Game::from_words`]: same rules, but the words
+    /// keep their categories and clues, and the pack may state its own guess
+    /// budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmptyWordList`] if nothing playable survives the cleanup.
+    pub fn from_pack(pack: Pack) -> Result<Self, EmptyWordList> {
+        Self::from_pack_with_rng(pack, rand::make_rng())
+    }
+
+    /// [`Game::from_pack`] with a fixed RNG seed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmptyWordList`] if the pack has no playable words.
+    pub fn from_pack_with_seed(pack: Pack, seed: u64) -> Result<Self, EmptyWordList> {
+        Self::from_pack_with_rng(pack, StdRng::seed_from_u64(seed))
     }
 
     /// [`Game::from_words`] with a fixed RNG seed.
@@ -346,30 +420,50 @@ impl Game {
     ///
     /// Returns [`EmptyWordList`] if the list has no playable words.
     pub fn from_words_with_seed(words: Vec<String>, seed: u64) -> Result<Self, EmptyWordList> {
-        Self::from_words_with_rng(words, StdRng::seed_from_u64(seed))
+        Self::from_pack_with_rng(Pack::from_words(words), StdRng::seed_from_u64(seed))
     }
 
-    fn from_words_with_rng(words: Vec<String>, rng: StdRng) -> Result<Self, EmptyWordList> {
-        let words = sanitize_words(words);
+    fn from_pack_with_rng(pack: Pack, rng: StdRng) -> Result<Self, EmptyWordList> {
+        let budget = budget_for(None, pack.guess_budget);
+        let name = pack.display_name().to_owned();
+        let words = pack.into_words();
         if words.is_empty() {
             return Err(EmptyWordList);
         }
-        Ok(Self::start(None, words, rng))
+        Ok(Self::start_with(None, budget, name, words, rng))
+    }
+
+    /// Shared constructor body for a pack: sanitize it, ask it for its budget,
+    /// and start a match on it.
+    fn start(difficulty: Option<Difficulty>, pack: Pack, rng: StdRng) -> Self {
+        let budget = budget_for(difficulty, pack.guess_budget);
+        let name = pack.display_name().to_owned();
+        Self::start_with(difficulty, budget, name, pack.into_words(), rng)
     }
 
     /// Shared constructor body. `words` must already be sanitized and non-empty
     /// for the game to be playable; an empty list yields an immediately-over
-    /// match, which only the bundled lists could never produce.
-    fn start(difficulty: Option<Difficulty>, words: Vec<String>, rng: StdRng) -> Self {
+    /// match, which only the bundled packs could never produce.
+    fn start_with(
+        difficulty: Option<Difficulty>,
+        guess_budget: usize,
+        pack_name: String,
+        words: Vec<Word>,
+        mut rng: StdRng,
+    ) -> Self {
+        let pack_words = words.len();
+        let words = draw_match(words, &mut rng);
         let total_words = words.len();
         let mut game = Game {
             difficulty,
             remaining_words: words,
             total_words,
-            word: String::new(),
+            pack_words,
+            pack_name,
+            current: Word::bare(String::new()),
             guessed: BTreeSet::new(),
             wrong_guesses: 0,
-            guess_budget: budget_for(difficulty),
+            guess_budget,
             result: None,
             words_won: 0,
             words_lost: 0,
@@ -391,11 +485,16 @@ impl Game {
         }
         let index = self.rng.random_range(0..self.remaining_words.len());
         // `swap_remove` is O(1) and order does not matter — we draw at random.
-        self.word = self.remaining_words.swap_remove(index);
+        self.current = self.remaining_words.swap_remove(index);
         self.guessed.clear();
         self.wrong_guesses = 0;
         self.result = None;
         true
+    }
+
+    /// The word being guessed, uppercased.
+    fn text(&self) -> &str {
+        &self.current.word
     }
 
     // ---------------------------------------------------------------- actions
@@ -433,7 +532,7 @@ impl Game {
             };
         }
 
-        if self.word.contains(letter) {
+        if self.text().contains(letter) {
             if self.is_word_complete() {
                 self.end_game(GameResult::Won, GuessResult::Correct)
             } else {
@@ -592,7 +691,7 @@ impl Game {
         if !self.would_switch_to(difficulty) {
             return false;
         }
-        self.reset(Some(difficulty), difficulty.words());
+        self.reset(Some(difficulty), difficulty.pack());
         true
     }
 
@@ -632,17 +731,49 @@ impl Game {
     /// Returns [`EmptyWordList`] if the list has no playable words; the current
     /// match is left untouched in that case.
     pub fn set_word_list(&mut self, words: Vec<String>) -> Result<(), EmptyWordList> {
-        let words = sanitize_words(words);
+        self.set_pack(Pack::from_words(words))
+    }
+
+    /// Abandon the current match and start a fresh one on a word pack.
+    ///
+    /// The pack-shaped half of [`Game::set_word_list`], and the one the view
+    /// actually calls: the words keep their categories and clues, and the pack
+    /// may state its own guess budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmptyWordList`] if the pack has no playable words; the current
+    /// match is left untouched in that case, which is what lets the view leave
+    /// the word on the board and charge nothing for a file that would not load.
+    pub fn set_pack(&mut self, pack: Pack) -> Result<(), EmptyWordList> {
+        let budget = budget_for(None, pack.guess_budget);
+        let name = pack.display_name().to_owned();
+        let words = pack.into_words();
         if words.is_empty() {
             return Err(EmptyWordList);
         }
-        self.reset(None, words);
+        self.reset_with(None, budget, name, words);
         Ok(())
     }
 
-    fn reset(&mut self, difficulty: Option<Difficulty>, words: Vec<String>) {
+    fn reset(&mut self, difficulty: Option<Difficulty>, pack: Pack) {
+        let budget = budget_for(difficulty, pack.guess_budget);
+        let name = pack.display_name().to_owned();
+        self.reset_with(difficulty, budget, name, pack.into_words());
+    }
+
+    fn reset_with(
+        &mut self,
+        difficulty: Option<Difficulty>,
+        guess_budget: usize,
+        pack_name: String,
+        words: Vec<Word>,
+    ) {
+        self.pack_words = words.len();
+        self.pack_name = pack_name;
+        let words = draw_match(words, &mut self.rng);
         self.difficulty = difficulty;
-        self.guess_budget = budget_for(difficulty);
+        self.guess_budget = guess_budget;
         self.total_words = words.len();
         self.remaining_words = words;
         self.words_won = 0;
@@ -657,7 +788,26 @@ impl Game {
 
     /// The word being guessed, uppercased. Use this for the game-over reveal.
     pub fn word(&self) -> &str {
-        &self.word
+        self.text()
+    }
+
+    /// What kind of thing the current word is — `"Food"`, `"College life"` —
+    /// or `None` for a pack that does not say.
+    ///
+    /// Safe to show *during* play: a category names the neighbourhood, not the
+    /// word. A clue is the same, and the answer itself never is.
+    pub fn category(&self) -> Option<&str> {
+        self.current.category.as_deref()
+    }
+
+    /// A sentence about what the current word means, or `None` for a pack that
+    /// does not say.
+    ///
+    /// Unlike [`Game::hint`] this costs nothing and this module does not track
+    /// whether it has been read: it reveals no letter, so there is no rule
+    /// here for it to be part of.
+    pub fn clue(&self) -> Option<&str> {
+        self.current.clue.as_deref()
     }
 
     /// The current word as display cells, one per character.
@@ -666,7 +816,7 @@ impl Game {
     /// answer without special-casing anything.
     pub fn cells(&self) -> Vec<Cell> {
         let over = self.is_game_over();
-        self.word
+        self.text()
             .chars()
             .map(|value| {
                 let guessable = value.is_ascii_alphabetic();
@@ -707,8 +857,8 @@ impl Game {
 
     /// How many wrong guesses this game allows in total.
     ///
-    /// [`Difficulty::guess_budget`] for a bundled list, or
-    /// [`DEFAULT_GUESS_BUDGET`] for one loaded from a file. The UI needs it
+    /// [`Difficulty::guess_budget`] for a bundled pack, or what `budget_for`
+    /// works out for a loaded one. The UI needs it
     /// for the wrong-guess counter, for the row of pips and for the gallows,
     /// which spreads its body parts over whatever budget it is handed.
     pub fn guess_budget(&self) -> usize {
@@ -775,6 +925,31 @@ impl Game {
         self.total_words
     }
 
+    /// How many playable words the pack held.
+    ///
+    /// At least [`Game::total_words`], and more than it whenever the pack is
+    /// bigger than a match — which every bundled pack now is. The view says so
+    /// when a list is loaded, because "loaded two hundred words" and "playing
+    /// ten of them" are both true and only one of them is obvious.
+    pub fn pack_words(&self) -> usize {
+        self.pack_words
+    }
+
+    /// What the pack called itself, or `None` for one that did not say.
+    ///
+    /// Empty for a plain `.txt`, which has nowhere to put a name, so the view
+    /// has its own wording to fall back on.
+    ///
+    /// Testing emptiness is enough because the name arrives through
+    /// [`Pack::display_name`] and is trimmed before it is ever stored — a pack
+    /// calling itself `"   "` is stored as `""` and answered `None` here. Keep
+    /// that true at the call sites rather than trimming again in this method:
+    /// a blank name is meant to be indistinguishable from an absent one by the
+    /// time anything reads it.
+    pub fn pack_name(&self) -> Option<&str> {
+        Some(self.pack_name.as_str()).filter(|name| !name.is_empty())
+    }
+
     /// Which word of the match is on screen, 1-based — the "3" in "word 3 of 10".
     pub fn word_number(&self) -> usize {
         self.total_words - self.remaining_words.len()
@@ -789,7 +964,7 @@ impl Game {
     /// up than one that appears once.
     fn hidden_letters(&self) -> Vec<char> {
         let mut letters: Vec<char> = self
-            .word
+            .text()
             .chars()
             .filter(|c| c.is_ascii_alphabetic() && !self.guessed.contains(c))
             .collect();
@@ -800,7 +975,7 @@ impl Game {
 
     /// Whether every guessable character of the current word has been guessed.
     fn is_word_complete(&self) -> bool {
-        self.word
+        self.text()
             .chars()
             .filter(|c| c.is_ascii_alphabetic())
             .all(|c| self.guessed.contains(&c))
@@ -854,10 +1029,132 @@ mod tests {
             .collect()
     }
 
+    /// A difficulty's pack as plain uppercase strings, which is what most of
+    /// these tests want to compare a dealt word against.
+    fn pack_words(difficulty: Difficulty) -> Vec<String> {
+        difficulty
+            .pack()
+            .into_words()
+            .into_iter()
+            .map(|word| word.word)
+            .collect()
+    }
+
     #[test]
-    fn bundled_lists_all_have_ten_words() {
+    fn every_bundled_pack_parses() {
+        // `Difficulty::pack` panics on a pack that does not, which is the rule
+        // for a file we ship rather than one the player wrote. This is the test
+        // that stops a broken one reaching a release, so it is deliberately
+        // cheap and deliberately here.
         for difficulty in Difficulty::ALL {
-            assert_eq!(difficulty.words().len(), 10, "{}", difficulty.label());
+            let pack = difficulty.pack();
+            assert_eq!(pack.name, difficulty.label(), "{}", difficulty.label());
+            assert_eq!(pack.guess_budget, None, "{}", difficulty.label());
+        }
+    }
+
+    #[test]
+    fn every_bundled_pack_can_fill_a_whole_match() {
+        // A pack shorter than `MATCH_WORDS` is legal — a list someone typed out
+        // by hand is often shorter — but a *bundled* one being short would mean
+        // a match that quietly ends early on that difficulty and nowhere else.
+        for difficulty in Difficulty::ALL {
+            assert!(
+                pack_words(difficulty).len() >= MATCH_WORDS,
+                "{} has only {} words",
+                difficulty.label(),
+                pack_words(difficulty).len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_match_is_drawn_from_the_pack_rather_than_being_all_of_it() {
+        // The point of a pack bigger than a match: the same difficulty played
+        // twice is not the same words in a different order. Two seeds rather
+        // than two matches, so the assertion is about the draw and not about
+        // what the first match happened to remove.
+        let pack = pack_words(Difficulty::Easy);
+        assert!(
+            pack.len() > MATCH_WORDS,
+            "this test only says anything while the pack is bigger than a match"
+        );
+        let drawn = |seed| {
+            let mut game = Game::with_seed(Difficulty::Easy, seed);
+            let mut words = vec![game.word().to_string()];
+            while !game.is_match_over() {
+                game.give_up();
+                if game.new_game() {
+                    words.push(game.word().to_string());
+                }
+            }
+            words.sort();
+            words
+        };
+        assert_ne!(drawn(1), drawn(2), "two seeds drew the same ten words");
+    }
+
+    #[test]
+    fn no_bundled_clue_gives_its_own_word_away() {
+        // The standing rule from the abandon-tooltip near-miss: nothing shown
+        // *during* play may leak the answer, and a category and a clue are both
+        // shown during play. A clue naming its own word is the obvious way to
+        // break it, and a clue built on the same stem — "immeable" under
+        // `Immeability` — is the way it actually happened while these were
+        // being written. Six letters is where that stops being a coincidence
+        // and starts being most of a short word.
+        let letters_only = |text: &str| -> String {
+            text.chars()
+                .filter(char::is_ascii_alphabetic)
+                .collect::<String>()
+                .to_ascii_lowercase()
+        };
+        for difficulty in Difficulty::ALL {
+            for word in difficulty.pack().words {
+                let needle = letters_only(&word.word);
+                let haystack = letters_only(&format!(
+                    "{}{}",
+                    word.category.as_deref().unwrap_or_default(),
+                    word.clue.as_deref().unwrap_or_default()
+                ));
+                assert!(
+                    !haystack.contains(&needle),
+                    "{}'s clue names the word itself",
+                    word.word
+                );
+                if needle.len() >= 6 {
+                    assert!(
+                        !haystack.contains(&needle[..6]),
+                        "{}'s clue shares its first six letters",
+                        word.word
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_bundled_word_carries_a_category_and_a_clue() {
+        // Both are optional in the *format*, because a list typed out by hand
+        // has no reason to fill them in. The packs we ship are held to more
+        // than that: a word with no clue is a `Clue` button that does nothing
+        // for reasons the player cannot see.
+        for difficulty in Difficulty::ALL {
+            for word in difficulty.pack().words {
+                assert!(word.category.is_some(), "{} has no category", word.word);
+                assert!(word.clue.is_some(), "{} has no clue", word.word);
+            }
+        }
+    }
+
+    #[test]
+    fn no_bundled_pack_repeats_a_word() {
+        for difficulty in Difficulty::ALL {
+            let mut words = pack_words(difficulty);
+            let before = words.len();
+            words.sort();
+            words.dedup();
+            assert_eq!(words.len(), before, "{} repeats a word", difficulty.label());
         }
     }
 
@@ -1135,9 +1432,30 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_that_names_itself_nothing_is_a_pack_with_no_name() {
+        // The same rule as a blank category or clue, one field over: blank and
+        // absent have to be the same state by the time anything reads it, or
+        // the view's fallback wording never gets its turn and the title bar
+        // shows three spaces.
+        for name in ["", "   ", "\t\n"] {
+            let pack = Pack::parse(&format!(
+                r#"{{ "name": {name:?}, "words": [{{ "word": "Alpha" }}] }}"#
+            ))
+            .expect("valid JSON");
+            let game = Game::from_pack(pack).expect("one word is not an empty pack");
+            assert_eq!(game.pack_name(), None, "{name:?} was taken as a name");
+        }
+        // And a name with something in it survives, trimmed.
+        let pack = Pack::parse(r#"{ "name": "  Pets  ", "words": [{ "word": "Alpha" }] }"#)
+            .expect("valid JSON");
+        let game = Game::from_pack(pack).expect("one word is not an empty pack");
+        assert_eq!(game.pack_name(), Some("Pets"));
+    }
+
+    #[test]
     fn a_match_never_repeats_a_word() {
         let mut game = Game::with_seed(Difficulty::Easy, 42);
-        let expected = Difficulty::Easy.words();
+        let pack = pack_words(Difficulty::Easy);
         let mut seen = vec![game.word().to_string()];
         while !game.is_match_over() {
             game.give_up();
@@ -1145,14 +1463,88 @@ mod tests {
                 seen.push(game.word().to_string());
             }
         }
-        assert_eq!(seen.len(), expected.len());
+        assert_eq!(seen.len(), MATCH_WORDS);
         let mut sorted = seen.clone();
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), seen.len(), "a word was dealt twice: {seen:?}");
-        let mut expected_sorted = expected;
-        expected_sorted.sort();
-        assert_eq!(sorted, expected_sorted);
+        for word in &seen {
+            assert!(pack.contains(word), "{word} is not in the pack");
+        }
+    }
+
+    #[test]
+    fn the_same_seed_draws_the_same_match() {
+        // The other half of the above: the draw has to be reproducible, or a
+        // seeded game stops being seeded. All ten words rather than the first,
+        // because the first is dealt by `draw_match` and the other nine by the
+        // `deal_word` sequence after it — a regression in the second half
+        // would sail past a check on the first word alone.
+        let words = |seed| {
+            let mut game = Game::with_seed(Difficulty::Easy, seed);
+            let mut seen = vec![game.word().to_string()];
+            while !game.is_match_over() {
+                game.give_up();
+                if game.new_game() {
+                    seen.push(game.word().to_string());
+                }
+            }
+            seen
+        };
+        let first = words(7);
+        assert_eq!(first.len(), MATCH_WORDS);
+        assert_eq!(first, words(7));
+        // And not by dealing the same match to everyone: a seed that produced
+        // the same ten words as any other seed would satisfy the line above
+        // while proving nothing about the seed.
+        assert_ne!(first, words(8));
+    }
+
+    #[test]
+    fn a_pack_smaller_than_a_match_is_played_in_full() {
+        let game =
+            Game::from_words(vec!["ALPHA".into(), "OMEGA".into()]).expect("two words is not empty");
+        assert_eq!(game.total_words(), 2);
+    }
+
+    #[test]
+    fn a_loaded_pack_may_ask_for_its_own_guess_budget() {
+        let pack = Pack::parse(r#"{ "guess_budget": 9, "words": [{ "word": "Alpha" }] }"#)
+            .expect("valid JSON");
+        let game = Game::from_pack(pack).expect("one word is not empty");
+        assert_eq!(game.guess_budget(), 9);
+    }
+
+    #[test]
+    fn a_budget_the_gallows_cannot_draw_is_pulled_to_one_it_can() {
+        // Not refused, pulled: a pack asking for 2 or for 40 is asking for a
+        // wrong guess that is not exactly one new body part, and the nearest
+        // playable answer is better than an error the player cannot act on.
+        for (asked, expected) in [
+            (0, gallows::CORE_PARTS),
+            (2, gallows::CORE_PARTS),
+            (40, gallows::PARTS.len()),
+        ] {
+            let pack = Pack {
+                guess_budget: Some(asked),
+                ..Pack::from_words(vec!["ALPHA".into()])
+            };
+            let game = Game::from_pack(pack).expect("one word is not empty");
+            assert_eq!(game.guess_budget(), expected, "asked for {asked}");
+        }
+    }
+
+    #[test]
+    fn a_bundled_difficulty_does_not_let_a_pack_argue_about_the_budget() {
+        // `budget_for` asks the pack only when there is no difficulty. The
+        // bundled packs state no budget, so this is guarding the rule rather
+        // than any file we ship — the four numbers on `Difficulty` are the
+        // difficulty ladder, and a pack reached through a pill cannot bend it.
+        assert_eq!(
+            budget_for(Some(Difficulty::Insane), Some(10)),
+            Difficulty::Insane.guess_budget()
+        );
+        assert_eq!(budget_for(None, Some(10)), 10);
     }
 
     #[test]
@@ -1350,7 +1742,7 @@ mod tests {
         assert_eq!(game.wrong_guesses(), 0);
         assert!(game.guessed_letters().is_empty());
         assert_eq!(game.guess_budget(), Difficulty::Easy.guess_budget());
-        assert!(Difficulty::Easy.words().contains(&game.word().to_string()));
+        assert!(pack_words(Difficulty::Easy).contains(&game.word().to_string()));
     }
 
     #[test]
@@ -1401,11 +1793,7 @@ mod tests {
         assert!(!game.is_game_over());
         assert!(!game.is_match_over());
         assert_eq!(game.word_number(), 1);
-        assert!(
-            Difficulty::Insane
-                .words()
-                .contains(&game.word().to_string())
-        );
+        assert!(pack_words(Difficulty::Insane).contains(&game.word().to_string()));
     }
 
     #[test]

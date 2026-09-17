@@ -7,7 +7,8 @@ with [gpui-kit](https://gpui-kit.com) instead of Swing. Two things are not the
 original's: the gallows is drawn line by line at run time rather than shipped as
 pictures, and difficulty now sets [the guess budget](#the-guess-budget) as well
 as the word list — a budget you can trade a guess out of for
-[a hint](#hints). See
+[a hint](#hints). The word lists themselves are now
+[packs](#word-packs) that know what each word means. See
 [Differences from the original](#differences-from-the-original).
 
 ```
@@ -27,13 +28,14 @@ as the word list — a budget you can trade a guess out of for
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 54 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
+engine (with 65 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
 keeps the streak (30 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (25 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), and [`src/ui/`](src/ui/) is everything GPUI — plus the fifty-one
-tests its own pure helpers have grown. That is 195 tests, and
-`cargo test` runs the lot in well under a second. The word lists and the
+(35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (16
+more), and [`src/ui/`](src/ui/) is everything GPUI — plus the sixty-three tests
+its own pure helpers have grown. That is 234 tests, and
+`cargo test` runs the lot in well under a second. The word packs and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
 
@@ -185,9 +187,10 @@ word list. The streak deliberately does neither, which is the point of it.
 | --- | --- |
 | Guess a letter | Type it, or click its button |
 | Reveal a letter (costs one wrong guess) | `Hint` button, or `Ctrl+H` |
+| Show what the word means (costs nothing) | `Clue` button, or `Ctrl+L` |
 | Next word after a game ends | `New Game?` button, or Enter / Space |
 | Give up on the current word (counts as a loss) | `Change Word` button, or `Ctrl+N` |
-| Load your own word list | `Open word list…` button, or `Ctrl+O` |
+| Load your own word list or pack | `Open word list…` button, or `Ctrl+O` |
 | Change difficulty (starts a fresh match, and changes the guess budget) | The Easy / Medium / Hard / Insane buttons |
 | Abandon the word you are on (counts as a loss) | Changing difficulty or loading a word list mid-word |
 | Replay the difficulty you just finished | The button already selected, once the match is over |
@@ -205,15 +208,19 @@ read from the bindings themselves, so on macOS they read `⌃H` rather than
 `Ctrl+H`.
 
 A word list is a plain `.txt` file with one word per line. Lines are trimmed and
-upper-cased, and lines with no letters in them are dropped.
+upper-cased, and lines with no letters in them are dropped. A **word pack** is
+the richer version: a `.json` file that can also say what kind of thing each
+word is and what it means. See [Word packs](#word-packs).
 
-A *match* is one pass through the whole word list — ten words for the bundled
-lists, drawn at random without repeats. When the list runs out the match is
-scored (more wins than losses, fewer, or a tie) and you pick a difficulty or a
-new word list to start over — including the difficulty you were already on,
-which is the one click that restarts it. Mid-match that same click does
-nothing, so the word in hand survives a stray press on the button that is
-already selected.
+A *match* is **ten words**, drawn at random without repeats from whichever pack
+you are playing. The bundled packs hold thirty each, so a match is a third of
+one and playing the same difficulty twice is not the same ten words in a
+different order. A pack with fewer than ten words in it is played in full. When
+the drawn words run out the match is scored (more wins than losses, fewer, or a
+tie) and you pick a difficulty or a new word list to start over — including the
+difficulty you were already on, which is the one click that restarts it.
+Mid-match that same click does nothing, so the word in hand survives a stray
+press on the button that is already selected.
 
 Leaving a word part-played is losing it. Switching difficulty or loading a new
 list while a word is in progress counts that word as a loss, ends your streak
@@ -241,7 +248,9 @@ feet, so one wrong guess is always exactly one new part however many you get.
 Ten is the ceiling for that reason and not an arbitrary one.
 
 A word list you load from a file gets six, because nothing in a `.txt` file
-says how hard it is meant to be.
+says how hard it is meant to be. A `.json` pack may ask for its own budget —
+see [Word packs](#word-packs) — and is held to the same 6..=10, for the same
+reason the four numbers above are.
 
 ## Hints
 
@@ -262,6 +271,67 @@ you the word in the same breath, which is a trap rather than a choice — and it
 would raise the question of whether a word completed by the hint that killed
 you counts as a win. Stopping one guess short means the question never comes
 up. A hint *can* finish a word, and when it does you win.
+
+## Clues
+
+`Clue` — the toolbar button, or `Ctrl+L` — shows a sentence about what the word
+*means*, centred under the letters, and costs you **nothing**.
+
+That is not an oversight. The currency in this game is `remaining_guesses`, and
+it is about letters: a hint is priced because it hands you one. A clue tells you
+what you are looking for and leaves you to spell it, so there is no guess to
+charge. The word's **category** is free for the same reason and does not even
+need asking for — it sits on the right of the word panel's own `THE WORD`
+heading, opposite the label, so you can see that you are looking for something
+in `Food` without asking for anything.
+
+Neither ever gives the answer away. There is a test over the bundled packs that
+no category and no clue contains the word it belongs to, or even its first six
+letters, which is exactly how two clues were caught doing it while they were
+being written.
+
+A clue is available on the last guess, unlike a hint, and it stays available
+after the word is over — once a word is lost the clue is the only thing that
+explains what you were looking at. It is greyed out for a word list that carries
+no clues, which is every plain `.txt`.
+
+## Word packs
+
+The four bundled lists are `.json` **packs** under `assets/words/`, baked into
+the binary. A pack is a name, an optional guess budget, and words that may each
+carry a category and a clue:
+
+```json
+{
+  "name": "Easy",
+  "words": [
+    { "word": "Laptop", "category": "Technology", "clue": "A computer you can close." },
+    { "word": "Add/Drop Form", "category": "College life" }
+  ]
+}
+```
+
+Everything but `word` is optional, and you can load one of your own through
+`Open word list…` exactly as you can a `.txt`. Which of the two a file is read
+as is decided by what is **in** it rather than by its name — anything starting
+with `{` is parsed as a pack — so a misnamed file still works.
+
+| Key | What it does |
+| --- | --- |
+| `name` | What the title bar calls the list. A pack you load uses it in place of `Custom word list`; one reached through a difficulty pill is always called by the pill. Blank or all-whitespace counts as not giving one. |
+| `guess_budget` | How many wrong guesses the pack wants to allow, pulled into 6..=10. Only honoured for a pack you load: the difficulty ladder is not a pack's to bend. |
+| `words[].word` | The word. Spaces, slashes and punctuation all survive; only A–Z is guessable. |
+| `words[].category` | Shown on the word panel's heading row while the word is in play. |
+| `words[].clue` | Shown when you press `Clue`. |
+
+Keys the game has never heard of are **ignored rather than refused**, and every
+optional key defaults when absent. Between them, a pack written for a later
+version of the game still plays here and one written today still reads there,
+which is why there is no version number in the format and none is written.
+
+The file is read and written by [serde](https://serde.rs), the same way
+`settings.json` is — the Rust struct in [`src/words.rs`](src/words.rs) *is* the
+schema, so the two cannot drift apart.
 
 ## Scoring
 
@@ -357,16 +427,13 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. Thirteen ideas have been agreed for where it goes next; ten have
-shipped and three are open. The numbering is the order they were argued about
+mirroring it. Sixteen ideas have been agreed for where it goes next; eleven have
+shipped and five are open. The numbering is the order they were argued about
 rather than any committed order, and it stays as it is even as items land —
 commit messages, pull requests and `CLAUDE.md` all cite these by number.
 
 ### Still to do
 
-- **3. Structured word packs.** Move the four ten-word lists into a serde format
-  that carries a category, a hint and a clue per word, so a match no longer
-  exhausts the pool.
 - **11. Resume the word you were on.** Closing the window mid-word is the last
   silent way out of a word you are losing: the settings file keeps the theme,
   the window, the difficulty and the lifetime stats, and nothing at all about
@@ -403,6 +470,63 @@ commit messages, pull requests and `CLAUDE.md` all cite these by number.
   deliberately not on this list: item 11 closes that hole by remembering the
   word instead of asking about it, and the two are alternatives.
 
+The next four came out of the item 3 discussion and are **to be considered**
+rather than agreed: each is worth doing only if the thing behind it turns out to
+matter.
+
+- **14. Per-pack stats, and the `id` they would need.** The lifetime tally is
+  keyed on difficulty, so a pack of your own is counted in the totals and the
+  streak but has no row of its own. Giving it one means packs need identity —
+  and unlike every other field in the format, an `id` cannot be added later
+  without stranding every pack written before it, so it has to land *with* this
+  item or not at all. The cost to weigh against that is an unbounded stats
+  panel: a pack you loaded once off a USB stick would own a row for ever.
+- **15. A pack picker.** A way to choose a bundled pack by name rather than only
+  through the difficulty pills. It is blocked on there being more than one pack
+  per difficulty — today the pills *are* the picker — and when it arrives it
+  brings a fork with it: whether the pills go on picking content, or drop back
+  to picking only the guess budget with a separate control for the words. The
+  nearer-term half of the same idea is a **recent lists** menu, which has a real
+  annoyance behind it today: playing your own list twice means walking through
+  the file picker twice, and again after every launch.
+- **16. A weight for custom packs.** The difficulty weight (1/2/3/4) is what
+  multiplies a word's score under [Scoring](#scoring), and a pack of your own is
+  stuck at 1 however hard its words are. Either let a pack declare one, or
+  derive it from the words themselves — average length, unique letters, pool
+  size, letter rarity. Worth recording before anyone starts: **the declared
+  version reopens the hole `guess_budget` did not.** A budget is bounded by what
+  the gallows can draw and, at weight 1, is worth at most an Easy word; a
+  declared weight of 4 on a pack of three-letter words scores at Insane's rate
+  for no difficulty at all. The derived version has no such problem, because the
+  words have to earn it. That is an argument for the algorithmic half, not
+  against the item.
+- **17. A price for the clue.** The clue is free today, and free is defensible:
+  it says what the word *means* and leaves you to spell it, so it costs no
+  letters and the currency here is letters. What argues against it is that the
+  clues are not worth the same to each other. "A computer you can close." hands
+  you `Laptop`; "The state of being impassable; the adjective it is built on is
+  as obscure as it is." tells you almost nothing you can act on. A flat price
+  cannot express that difference — it would overcharge for the second to be
+  fair about the first — so the question is really *which* price, and there are
+  three shapes:
+  - **A flat wrong guess**, the way `Ctrl+H` is priced. One line to write, and
+    it is the one that ignores the asymmetry entirely.
+  - **A price derived from the clue**, the same idea as item 16's algorithmic
+    weight: something the content earns rather than declares, from the clue's
+    length, or from how much of the word it gives away.
+  - **A price the pack states, per word.** Honest about the fact that only the
+    author knows how much a clue gives away, and the only one of the three
+    where a word with a strong clue and a word with a weak one can be charged
+    differently. It is also the one that reopens the question the `guess_budget`
+    bound settles for everything else: a pack that prices every clue at zero is
+    a pack that scores at full rate with a free answer attached, so a per-word
+    price needs a floor the way the budget has a clamp.
+
+  Worth noting what makes this cheap to defer: the clue is currently the only
+  thing in the game with no price at all, so adding one later takes nothing
+  away that a player had come to rely on in a scored sense — the score is
+  already computed as if the clue were free.
+
 ### Shipped
 
 - **1. Hints, at a cost.** `Hint` in the toolbar, or `Ctrl+H`, reveals a letter
@@ -416,6 +540,14 @@ commit messages, pull requests and `CLAUDE.md` all cite these by number.
   playing, a run of them builds a bonus, and the streak spans matches,
   difficulties and launches — only failing a word ends it. See
   [Scoring](#scoring).
+- **3. Structured word packs.** The four ten-word `.txt` lists are thirty-word
+  `.json` packs, each word carrying a category and a clue, read by serde the way
+  `settings.json` is. A match is ten words *drawn* from a pack rather than the
+  whole of it, so the same difficulty played twice is not the same ten words
+  reshuffled; the category shows above the word for free and the clue is a
+  button that costs nothing. A pack you load may state its own guess budget
+  and its own name. See [Word packs](#word-packs) and [Clues](#clues).
+
 - **4. Difficulty that changes the guess budget.** `Difficulty::guess_budget` is
   10 on Easy, 8 on Medium, 7 on Hard and the original's 6 on Insane, with 6 for
   a word list of your own. Item 6 is what made it small: the gallows already

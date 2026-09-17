@@ -6,8 +6,8 @@ use gpui_kit::*;
 
 use hangman_gpui::settings::Settings;
 use hangman_gpui::ui::{
-    ChangeWord, HangmanView, Hint, KEY_CONTEXT, MIN_WINDOW_SIZE, OpenWordList, apply_theme,
-    window_bounds,
+    ChangeWord, HangmanView, Hint, KEY_CONTEXT, MIN_WINDOW_SIZE, OpenWordList, ShowClue,
+    apply_theme, window_bounds,
 };
 
 fn main() {
@@ -56,6 +56,10 @@ fn main() {
             // them: `on_key_down` lets any chord through rather than guessing
             // its letter, so Ctrl+H costs a guess and a bare H does not.
             KeyBinding::new("ctrl-h", Hint, Some(KEY_CONTEXT)),
+            // Its free counterpart, from roadmap item 3: a clue says what the
+            // word means and charges nothing, where a hint hands you a letter
+            // and charges a guess.
+            KeyBinding::new("ctrl-l", ShowClue, Some(KEY_CONTEXT)),
         ]);
 
         // Restoring the saved bounds needs an `&App` — for the displays that
