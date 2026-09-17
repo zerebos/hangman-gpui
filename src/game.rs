@@ -22,6 +22,7 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
 use crate::gallows;
+use crate::words;
 use crate::words::{Pack, Word};
 
 /// The classic guess budget: six wrong guesses, a whole hangman and no more.
@@ -273,6 +274,55 @@ impl std::fmt::Display for EmptyWordList {
 
 impl std::error::Error for EmptyWordList {}
 
+/// A match in flight, in the detail it takes to pick it up again.
+///
+/// Everything in here is state that cannot be worked out from anything else:
+/// the word on the board and what has been guessed of it, the pool still to
+/// play, the budget being played to and the per-match tally. Everything a
+/// [`Game`] *derives* — the cells, the display string, the letters still
+/// available, which word of the match this is — is deliberately absent, because
+/// derived state written down twice is derived state that can come back
+/// disagreeing with itself. [`Game::resume`] recomputes all of it, and
+/// `total_words` with it.
+///
+/// The words are stored **by value**, not as indices into a pack: a pack edited
+/// between launches, or gone from the disk entirely, then costs nothing — you
+/// come back to the word you were actually on, category, clue and all.
+///
+/// It carries no serde derives, like everything else in this module. The file
+/// format for it lives in [`crate::settings`], which is the same split
+/// [`Word`] and [`crate::stats::Stats`] have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    /// The difficulty being played, or `None` for a word list of the player's.
+    pub difficulty: Option<Difficulty>,
+    /// What the pack called itself, or empty for one that did not say.
+    pub pack_name: String,
+    /// How many playable words the pack held, for the "playing ten of them"
+    /// half of the loaded-list summary.
+    pub pack_words: usize,
+    /// The budget the match is being played to. Re-derived on the way back in
+    /// rather than trusted — see [`Game::resume`].
+    pub guess_budget: usize,
+    /// The word on the board.
+    pub current: Word,
+    /// Every letter guessed against it, hints included.
+    pub guessed: BTreeSet<char>,
+    /// How many of those were wrong.
+    pub wrong_guesses: usize,
+    /// How the current word ended, or `None` while it is still being played.
+    /// A word given up on is the reason this cannot simply be derived: it is
+    /// lost with guesses still in hand and letters still hidden, which is
+    /// indistinguishable from a word in progress.
+    pub result: Option<GameResult>,
+    /// The words of the match still to be dealt.
+    pub remaining_words: Vec<Word>,
+    /// Words won so far this match.
+    pub words_won: usize,
+    /// Words lost so far this match.
+    pub words_lost: usize,
+}
+
 /// The guess budget a match is played with.
 ///
 /// A bundled difficulty's own [`Difficulty::guess_budget`] is the rule for it,
@@ -421,6 +471,128 @@ impl Game {
     /// Returns [`EmptyWordList`] if the list has no playable words.
     pub fn from_words_with_seed(words: Vec<String>, seed: u64) -> Result<Self, EmptyWordList> {
         Self::from_pack_with_rng(Pack::from_words(words), StdRng::seed_from_u64(seed))
+    }
+
+    /// Pick the match back up from a [`Snapshot`], seeded from the operating
+    /// system.
+    ///
+    /// Returns `None` for a snapshot that does not describe a match anyone
+    /// could be in the middle of, which is the whole of the validation: a
+    /// saved match is read back out of a file the player is invited to edit,
+    /// so it is checked the way a word pack is rather than trusted, and the
+    /// caller falls back to dealing a fresh match exactly as
+    /// [`crate::settings`] falls back to its defaults. Nothing here is worth
+    /// failing loudly over — the cost of a snapshot thrown away is one word.
+    ///
+    /// What is checked, and why each one matters:
+    ///
+    /// * The word and the pool go through [`crate::words::sanitize`], the same
+    ///   cleanup a pack off disk gets. A current word with nothing guessable
+    ///   left in it is the one unrecoverable case, so it is the one `None`
+    ///   that is about the word itself.
+    /// * **The budget is re-derived, not restored.** It goes back through
+    ///   `budget_for`, so a difficulty's budget is its own however the file
+    ///   reads, and a loaded pack's is clamped into what the gallows can draw.
+    ///   Trusting the saved number would let a hand-edited file play Insane
+    ///   with ten guesses — at Insane's weight.
+    /// * `result` has to be one the rest of the state could have produced: a
+    ///   completed word is a win, a spent budget is a loss, and anything else
+    ///   is either still in progress or was given up on. That last pair is
+    ///   why `result` is stored rather than derived.
+    /// * A resolved word with an empty pool behind it is a match that is
+    ///   *over*, which is not a match in flight — [`Game::snapshot`] never
+    ///   writes one, and resuming into it would leave a window with no next
+    ///   word and no summary.
+    ///
+    /// The RNG is a fresh one. Word order is already decided — the pool is
+    /// restored as it stood — so the only thing a seed still buys is which
+    /// letter a hint reveals, and nothing promises that across launches.
+    pub fn resume(snapshot: Snapshot) -> Option<Self> {
+        Self::resume_with_rng(snapshot, rand::make_rng())
+    }
+
+    /// [`Game::resume`] with a fixed RNG seed.
+    pub fn resume_with_seed(snapshot: Snapshot, seed: u64) -> Option<Self> {
+        Self::resume_with_rng(snapshot, StdRng::seed_from_u64(seed))
+    }
+
+    fn resume_with_rng(snapshot: Snapshot, rng: StdRng) -> Option<Self> {
+        let current = words::sanitize(vec![snapshot.current]).pop()?;
+        let remaining_words = words::sanitize(snapshot.remaining_words);
+
+        let guess_budget = budget_for(snapshot.difficulty, Some(snapshot.guess_budget));
+        if snapshot.wrong_guesses > guess_budget {
+            return None;
+        }
+
+        let guessed: BTreeSet<char> = snapshot
+            .guessed
+            .into_iter()
+            .filter(|letter| letter.is_ascii_alphabetic())
+            .map(|letter| letter.to_ascii_uppercase())
+            .collect();
+
+        let complete = word_complete(&current.word, &guessed);
+        let spent = snapshot.wrong_guesses >= guess_budget;
+        let plausible = if complete {
+            snapshot.result == Some(GameResult::Won)
+        } else if spent {
+            snapshot.result == Some(GameResult::Lost)
+        } else {
+            matches!(snapshot.result, None | Some(GameResult::Lost))
+        };
+        if !plausible {
+            return None;
+        }
+
+        // A resolved word with nothing behind it is a match that is *over*,
+        // which is not a match in flight: there is no next word to deal and no
+        // summary to show, so there is nothing here to resume into.
+        if snapshot.result.is_some() && remaining_words.is_empty() {
+            return None;
+        }
+
+        // The length of the match, recounted rather than restored. A word
+        // still being played is not on the tally yet, so it is the one that
+        // has to be counted in on top of it; a resolved one already is.
+        // `saturating_add` because these two numbers come out of a file: the
+        // sum of two hand-written `usize`s can wrap, and a wrapped total would
+        // pass the bound below by being absurdly small rather than absurdly
+        // large.
+        let unplayed = usize::from(snapshot.result.is_none());
+        let total_words = snapshot
+            .words_won
+            .saturating_add(snapshot.words_lost)
+            .saturating_add(remaining_words.len())
+            .saturating_add(unplayed);
+        // No zero case: the check above leaves at least one word here either
+        // way. A match longer than a match is a file that has been edited into
+        // something `draw_match` could never have dealt.
+        if total_words > MATCH_WORDS {
+            return None;
+        }
+
+        Some(Game {
+            difficulty: snapshot.difficulty,
+            // A pack cannot have held fewer words than the match drew from it;
+            // a file saying otherwise is only ever wrong about a sentence in a
+            // notification, so it is corrected rather than refused.
+            pack_words: snapshot.pack_words.max(total_words),
+            pack_name: snapshot.pack_name.trim().to_owned(),
+            remaining_words,
+            total_words,
+            current,
+            guessed,
+            wrong_guesses: snapshot.wrong_guesses,
+            guess_budget,
+            result: snapshot.result,
+            words_won: snapshot.words_won,
+            words_lost: snapshot.words_lost,
+            // Always `None`: a match with an outcome is over, and the checks
+            // above have already refused every snapshot that describes one.
+            match_outcome: None,
+            rng,
+        })
     }
 
     fn from_pack_with_rng(pack: Pack, rng: StdRng) -> Result<Self, EmptyWordList> {
@@ -905,6 +1077,37 @@ impl Game {
         self.words_lost
     }
 
+    /// The match in flight, or `None` when there is nothing to come back to.
+    ///
+    /// `None` means the match is over: every word of it has been played and
+    /// the summary is on screen, so the next launch has a fresh match to deal
+    /// rather than a finished one to restore. Every other state is worth
+    /// saving, including a word that has just been resolved and one that has
+    /// not been guessed at yet — "where you were" is one rule with no
+    /// exceptions in it, and the alternative hands back the rest of the match
+    /// as the price of closing the window on a word you had just won.
+    ///
+    /// See [`Game::resume`] for the way back, and [`Snapshot`] for what is
+    /// left out of one.
+    pub fn snapshot(&self) -> Option<Snapshot> {
+        if self.is_match_over() {
+            return None;
+        }
+        Some(Snapshot {
+            difficulty: self.difficulty,
+            pack_name: self.pack_name.clone(),
+            pack_words: self.pack_words,
+            guess_budget: self.guess_budget,
+            current: self.current.clone(),
+            guessed: self.guessed.clone(),
+            wrong_guesses: self.wrong_guesses,
+            result: self.result,
+            remaining_words: self.remaining_words.clone(),
+            words_won: self.words_won,
+            words_lost: self.words_lost,
+        })
+    }
+
     /// The difficulty being played, or `None` for a custom word list.
     pub fn difficulty(&self) -> Option<Difficulty> {
         self.difficulty
@@ -975,11 +1178,20 @@ impl Game {
 
     /// Whether every guessable character of the current word has been guessed.
     fn is_word_complete(&self) -> bool {
-        self.text()
-            .chars()
-            .filter(|c| c.is_ascii_alphabetic())
-            .all(|c| self.guessed.contains(&c))
+        word_complete(self.text(), &self.guessed)
     }
+}
+
+/// Whether every guessable character of `word` is in `guessed`.
+///
+/// Free rather than a method because [`Game::resume`] has to ask it of a word
+/// and a letter set that are not a `Game` yet — and asking the same question
+/// twice, two ways, is how the win check and the resume check would come to
+/// disagree about what a finished word is.
+fn word_complete(word: &str, guessed: &BTreeSet<char>) -> bool {
+    word.chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .all(|c| guessed.contains(&c))
 }
 
 impl Default for Game {
@@ -1991,5 +2203,307 @@ mod tests {
         assert_eq!(outcome.game, Some(GameResult::Won));
         assert!(game.is_won());
         assert_eq!(game.remaining_guesses(), 1);
+    }
+
+    // ------------------------------------------- the match in flight (item 11)
+
+    /// A three-word match on a known difficulty, with a guess and a hint spent
+    /// on the word in hand — a match, in other words, that is genuinely in the
+    /// middle of something.
+    fn match_in_flight() -> Game {
+        let mut game = Game::from_pack_with_seed(
+            Pack {
+                name: "Fixture".into(),
+                guess_budget: Some(8),
+                // All three carry the same category and clue, so a test
+                // about what survives a round trip does not also depend on
+                // which of them the seed happens to deal first.
+                words: ["Laptop", "Bagel", "Kayak"]
+                    .map(|word| Word {
+                        word: word.into(),
+                        category: Some("Technology".into()),
+                        clue: Some("A computer you can close.".into()),
+                    })
+                    .to_vec(),
+            },
+            7,
+        )
+        .expect("the fixture pack has words in it");
+        game.guess('Z');
+        game.hint();
+        game
+    }
+
+    /// The same match, put through the trip a settings file would give it.
+    fn round_trip(game: &Game) -> Game {
+        Game::resume(game.snapshot().expect("the match is still running"))
+            .expect("a snapshot straight off a live game is resumable")
+    }
+
+    /// Everything a player can see about a game, for comparing the two sides
+    /// of a round trip without reaching into private fields.
+    fn visible(game: &Game) -> String {
+        format!(
+            "{:?} {:?} {:?} {} {} {} {} {} {} {} {} {:?} {:?} {:?}",
+            game.difficulty(),
+            game.pack_name(),
+            game.pack_words(),
+            game.display(),
+            game.word(),
+            game.wrong_guesses(),
+            game.guess_budget(),
+            game.words_won(),
+            game.words_lost(),
+            game.total_words(),
+            game.word_number(),
+            game.game_result(),
+            game.guessed_letters(),
+            (game.category(), game.clue()),
+        )
+    }
+
+    #[test]
+    fn a_match_in_flight_comes_back_exactly_as_it_was_left() {
+        let game = match_in_flight();
+
+        assert_eq!(visible(&round_trip(&game)), visible(&game));
+    }
+
+    #[test]
+    fn a_resumed_word_keeps_its_category_and_its_clue() {
+        let resumed = round_trip(&match_in_flight());
+
+        assert_eq!(resumed.category(), Some("Technology"));
+        assert_eq!(resumed.clue(), Some("A computer you can close."));
+    }
+
+    #[test]
+    fn a_resumed_match_plays_on_from_where_it_was() {
+        let mut resumed = round_trip(&match_in_flight());
+        let word = resumed.word().to_string();
+
+        win_current_game(&mut resumed);
+
+        assert!(resumed.is_won());
+        assert_eq!(resumed.words_won(), 1);
+        assert!(resumed.new_game());
+        assert_ne!(resumed.word(), word, "the pool moved on to the next word");
+    }
+
+    #[test]
+    fn a_finished_match_is_not_worth_coming_back_to() {
+        let mut game = game_with_word("LAPTOP");
+        win_current_game(&mut game);
+
+        assert!(game.is_match_over());
+        assert_eq!(game.snapshot(), None);
+    }
+
+    #[test]
+    fn a_word_that_has_just_been_resolved_is_still_saved() {
+        let mut game = match_in_flight();
+        lose_current_game(&mut game);
+
+        // The word is over but the match is not, and coming back to the next
+        // word of it beats coming back to a match that never happened.
+        let resumed = round_trip(&game);
+        assert_eq!(resumed.game_result(), Some(GameResult::Lost));
+        assert_eq!(resumed.words_lost(), 1);
+        assert_eq!(resumed.word_number(), 1);
+    }
+
+    #[test]
+    fn a_word_given_up_on_does_not_come_back_playable() {
+        let mut game = match_in_flight();
+        game.give_up();
+
+        // The reason `result` is stored rather than derived: this word has
+        // guesses in hand and letters still hidden, which is exactly what a
+        // word still being played looks like.
+        let resumed = round_trip(&game);
+        assert!(resumed.is_game_over());
+        assert_eq!(resumed.game_result(), Some(GameResult::Lost));
+    }
+
+    #[test]
+    fn a_word_list_of_your_own_resumes_with_its_own_budget() {
+        let pack = Pack {
+            guess_budget: Some(9),
+            words: vec![Word::bare("Laptop"), Word::bare("Bagel")],
+            ..Pack::default()
+        };
+        let game = Game::from_pack_with_seed(pack, 3).expect("the pack has words");
+
+        let resumed = round_trip(&game);
+
+        assert_eq!(resumed.difficulty(), None);
+        assert_eq!(resumed.guess_budget(), 9);
+    }
+
+    #[test]
+    fn a_difficulty_gets_its_own_budget_back_whatever_the_file_says() {
+        let game = Game::with_seed(Difficulty::Insane, 4);
+        let snapshot = Snapshot {
+            // The hand edit the re-derivation exists to refuse: Insane's
+            // weight with Easy's slack.
+            guess_budget: 10,
+            ..game.snapshot().expect("the match has just started")
+        };
+
+        let resumed = Game::resume(snapshot).expect("only the budget was wrong");
+
+        assert_eq!(resumed.guess_budget(), Difficulty::Insane.guess_budget());
+    }
+
+    #[test]
+    fn a_loaded_pack_asking_for_a_budget_the_gallows_cannot_draw_is_clamped() {
+        let game = game_with_word("LAPTOP");
+        for (asked, expected) in [(2, gallows::CORE_PARTS), (40, gallows::PARTS.len())] {
+            let snapshot = Snapshot {
+                guess_budget: asked,
+                ..game.snapshot().expect("the match is running")
+            };
+
+            let resumed = Game::resume(snapshot).expect("a budget is clamped, not refused");
+
+            assert_eq!(resumed.guess_budget(), expected, "asked for {asked}");
+        }
+    }
+
+    #[test]
+    fn a_word_with_nothing_left_to_guess_is_not_resumed() {
+        let game = game_with_word("LAPTOP");
+        for word in ["", "   ", "1234", "!!!"] {
+            let snapshot = Snapshot {
+                current: Word::bare(word),
+                ..game.snapshot().expect("the match is running")
+            };
+
+            assert!(Game::resume(snapshot).is_none(), "{word:?}");
+        }
+    }
+
+    #[test]
+    fn a_resumed_word_is_trimmed_and_uppercased_like_any_other() {
+        let game = game_with_word("LAPTOP");
+        let snapshot = Snapshot {
+            current: Word::bare("  laptop  "),
+            ..game.snapshot().expect("the match is running")
+        };
+
+        let resumed = Game::resume(snapshot).expect("it is a playable word");
+
+        assert_eq!(resumed.word(), "LAPTOP");
+    }
+
+    #[test]
+    fn a_result_the_rest_of_the_state_could_not_have_produced_is_refused() {
+        let mut game = match_in_flight();
+        game.guess('Z');
+        let live = game.snapshot().expect("the match is running");
+
+        for (result, why) in [
+            (Some(GameResult::Won), "the word is not complete"),
+            (None, "a spent budget is a loss"),
+            (Some(GameResult::Lost), "a completed word is a win"),
+        ] {
+            let snapshot = match why {
+                "a spent budget is a loss" => Snapshot {
+                    wrong_guesses: live.guess_budget,
+                    result,
+                    ..live.clone()
+                },
+                "a completed word is a win" => Snapshot {
+                    guessed: live.current.word.chars().collect(),
+                    result,
+                    ..live.clone()
+                },
+                _ => Snapshot {
+                    result,
+                    ..live.clone()
+                },
+            };
+
+            assert!(Game::resume(snapshot).is_none(), "{why}");
+        }
+    }
+
+    #[test]
+    fn more_wrong_guesses_than_the_budget_allows_is_not_resumed() {
+        let game = game_with_word("LAPTOP");
+        let snapshot = Snapshot {
+            wrong_guesses: 99,
+            ..game.snapshot().expect("the match is running")
+        };
+
+        assert!(Game::resume(snapshot).is_none());
+    }
+
+    #[test]
+    fn a_resolved_word_with_nothing_behind_it_is_a_finished_match_not_a_saved_one() {
+        let mut game = match_in_flight();
+        lose_current_game(&mut game);
+        let snapshot = Snapshot {
+            // The pool emptied out from under a word that is already over:
+            // there is no next word and no summary, so there is nothing here
+            // to resume into.
+            remaining_words: Vec::new(),
+            ..game.snapshot().expect("the match is running")
+        };
+
+        assert!(Game::resume(snapshot).is_none());
+    }
+
+    #[test]
+    fn the_match_length_is_recounted_rather_than_restored() {
+        let game = Game::from_words_with_seed(
+            ["Laptop", "Bagel", "Kayak", "Violin", "Anchor"]
+                .map(str::to_string)
+                .to_vec(),
+            11,
+        )
+        .expect("the fixture list has words in it");
+        let snapshot = game.snapshot().expect("the match has just started");
+        let remaining = snapshot.remaining_words.len();
+
+        let resumed = Game::resume(Snapshot {
+            words_won: 2,
+            words_lost: 1,
+            ..snapshot
+        })
+        .expect("three words played and the rest to come is an ordinary match");
+
+        // Three finished, one on the board, the rest still to deal.
+        assert_eq!(resumed.total_words(), remaining + 4);
+        assert_eq!(resumed.word_number(), 4);
+    }
+
+    #[test]
+    fn a_match_longer_than_a_match_is_not_resumed() {
+        let game = Game::with_seed(Difficulty::Easy, 12);
+        let snapshot = Snapshot {
+            words_won: MATCH_WORDS,
+            ..game.snapshot().expect("the match has just started")
+        };
+
+        assert!(Game::resume(snapshot).is_none());
+    }
+
+    #[test]
+    fn junk_in_the_guessed_letters_is_dropped_rather_than_refused() {
+        let game = game_with_word("LAPTOP");
+        let snapshot = Snapshot {
+            guessed: "l4 z!".chars().collect(),
+            ..game.snapshot().expect("the match is running")
+        };
+
+        let resumed = Game::resume(snapshot).expect("the word is still playable");
+
+        assert_eq!(
+            resumed.guessed_letters().iter().collect::<String>(),
+            "LZ",
+            "uppercased, with everything unguessable dropped"
+        );
+        assert_eq!(resumed.display(), "L_____");
     }
 }

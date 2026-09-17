@@ -31,8 +31,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::game::Difficulty;
+use crate::game::{Difficulty, GameResult, Snapshot};
 use crate::stats::Stats;
+use crate::words::Word;
 
 /// The directory the file is written into, under the platform's config
 /// directory. Named after the crate, like every other well-behaved app.
@@ -166,6 +167,141 @@ pub struct WindowFrame {
     pub maximized: bool,
 }
 
+/// How a word ended, as the file spells it.
+///
+/// A mirror of [`GameResult`] rather than the thing itself, for the reason
+/// [`ThemeChoice`] mirrors gpui-kit's `ThemeMode`: the file format is ours, and
+/// [`crate::game`] is kept free of the derives that would make it serde's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SavedResult {
+    Won,
+    Lost,
+}
+
+/// The match that was being played when the game last closed.
+///
+/// The file's shape for a [`Snapshot`], and the answer to the last silent way
+/// out of a word you are losing: closing the window used to throw the word
+/// away for nothing, so quitting and relaunching was a free reroll that kept
+/// your streak. Saving the match instead means quitting is not an escape,
+/// because you come back to it.
+///
+/// It is written from the moment anything about the match changes — every
+/// guess, every hint, every word — rather than as the window closes, and that
+/// is the point rather than an accident: a save that only happened on a clean
+/// close would still hand a free reroll to anyone who killed the process.
+///
+/// The words are stored whole, as [`Word`]s, rather than as indices into a
+/// pack. A pack rewritten between launches, or one that has been deleted from
+/// the disk, therefore costs nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedMatch {
+    /// The word on the board, with whatever its pack knew about it.
+    ///
+    /// The one field with no `#[serde(default)]`: a saved match without a word
+    /// in it is not a saved match, and failing the parse here is how it is
+    /// refused — `in_flight_or_default` turns that into "nothing to resume"
+    /// rather than into a lost settings file.
+    pub word: Word,
+    /// Every letter guessed against it, as one string: `"AEL"`.
+    ///
+    /// A string rather than an array of characters because this file is meant
+    /// to be readable, and `["A", "E", "L"]` is three lines of JSON saying one
+    /// word's worth of nothing.
+    #[serde(default)]
+    pub guessed: String,
+    /// How many of those guesses were wrong.
+    #[serde(default)]
+    pub wrong_guesses: usize,
+    /// How the word ended, or absent while it is still being played.
+    #[serde(default)]
+    pub result: Option<SavedResult>,
+    /// The words of the match still to be dealt.
+    #[serde(default)]
+    pub remaining: Vec<Word>,
+    /// The difficulty it is being played on, or absent for a word list of your
+    /// own.
+    #[serde(default, with = "difficulty_by_name")]
+    pub difficulty: Option<Difficulty>,
+    /// What the pack called itself, or empty for one that did not say.
+    #[serde(default)]
+    pub pack: String,
+    /// How many playable words that pack held.
+    #[serde(default)]
+    pub pack_words: usize,
+    /// The guess budget the match is being played to. Advisory: a difficulty's
+    /// own budget wins over it on the way back in, and a loaded pack's is
+    /// clamped — see [`crate::game::Game::resume`].
+    #[serde(default)]
+    pub guess_budget: usize,
+    /// Words won so far this match.
+    #[serde(default)]
+    pub words_won: usize,
+    /// Words lost so far this match.
+    #[serde(default)]
+    pub words_lost: usize,
+    /// What the match has scored so far.
+    ///
+    /// The one field here that is not the game's: the match score lives in
+    /// [`crate::stats::Session`], and unlike the lifetime tally beside it in
+    /// this file it would otherwise not survive the launch.
+    #[serde(default)]
+    pub match_points: u32,
+}
+
+impl SavedMatch {
+    /// The file's version of a snapshot the game handed over, plus the match
+    /// score that goes with it.
+    pub fn new(snapshot: Snapshot, match_points: u32) -> Self {
+        Self {
+            word: snapshot.current,
+            // `BTreeSet` iterates in order, so the string is alphabetical and a
+            // file written twice from the same state is the same file.
+            guessed: snapshot.guessed.into_iter().collect(),
+            wrong_guesses: snapshot.wrong_guesses,
+            result: snapshot.result.map(|result| match result {
+                GameResult::Won => SavedResult::Won,
+                GameResult::Lost => SavedResult::Lost,
+            }),
+            remaining: snapshot.remaining_words,
+            difficulty: snapshot.difficulty,
+            pack: snapshot.pack_name,
+            pack_words: snapshot.pack_words,
+            guess_budget: snapshot.guess_budget,
+            words_won: snapshot.words_won,
+            words_lost: snapshot.words_lost,
+            match_points,
+        }
+    }
+
+    /// The snapshot back out again, reshaped and nothing more.
+    ///
+    /// Deliberately not the place the values are checked: this file is one
+    /// anyone may edit, and what a plausible match in flight *is* is a rule,
+    /// so it belongs with the rules. [`crate::game::Game::resume`] is what
+    /// refuses a snapshot, and it refuses it the same way whether it came from
+    /// here or from a test.
+    pub fn snapshot(self) -> Snapshot {
+        Snapshot {
+            difficulty: self.difficulty,
+            pack_name: self.pack,
+            pack_words: self.pack_words,
+            guess_budget: self.guess_budget,
+            current: self.word,
+            guessed: self.guessed.chars().collect(),
+            wrong_guesses: self.wrong_guesses,
+            result: self.result.map(|result| match result {
+                SavedResult::Won => GameResult::Won,
+                SavedResult::Lost => GameResult::Lost,
+            }),
+            remaining_words: self.remaining,
+            words_won: self.words_won,
+            words_lost: self.words_lost,
+        }
+    }
+}
+
 /// Everything the game remembers between launches.
 ///
 /// `#[serde(default)]` is what makes an older or hand-trimmed file work: any
@@ -191,6 +327,17 @@ pub struct Settings {
     /// never-fail-loudly rule the module doc states.
     #[serde(deserialize_with = "stats_or_default")]
     pub stats: Stats,
+    /// The match that was still being played when the window closed, if there
+    /// was one — see [`SavedMatch`].
+    ///
+    /// Forgiving in the same two ways `stats` is, and for the same reason: a
+    /// key that is missing (every settings file written before this existed)
+    /// is simply no match to resume, and one that holds nonsense is thrown
+    /// away on its own rather than taking the theme, the window and the
+    /// lifetime score down with it. The worst a broken value can do is cost
+    /// you the word you were on.
+    #[serde(deserialize_with = "in_flight_or_default")]
+    pub in_flight: Option<SavedMatch>,
 }
 
 impl Settings {
@@ -279,6 +426,18 @@ fn stats_or_default<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
+/// Read the match in flight, or hand back `None` if it is unreadable.
+///
+/// [`stats_or_default`] for the other forgiving key, and the same mechanism: a
+/// `Deserializer` cannot be attempted twice, so the value is taken as raw JSON
+/// first and only then shaped.
+fn in_flight_or_default<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<SavedMatch>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 /// Serde for `Option<Difficulty>`, stored as the name from the original's
 /// Difficulty menu: `"difficulty": "Insane"`.
 ///
@@ -336,6 +495,29 @@ mod tests {
         rect.fit_onto(displays, MIN.0, MIN.1)
     }
 
+    /// A match in flight with every field of it saying something, so a round
+    /// trip that drops one is a round trip that fails.
+    fn saved_match() -> SavedMatch {
+        SavedMatch {
+            word: Word {
+                word: "LAPTOP".into(),
+                category: Some("Technology".into()),
+                clue: Some("A computer you can close.".into()),
+            },
+            guessed: "AOPT".into(),
+            wrong_guesses: 1,
+            result: None,
+            remaining: vec![Word::bare("BAGEL"), Word::bare("KAYAK")],
+            difficulty: Some(Difficulty::Medium),
+            pack: "Medium".into(),
+            pack_words: 30,
+            guess_budget: 8,
+            words_won: 2,
+            words_lost: 1,
+            match_points: 520,
+        }
+    }
+
     // ------------------------------------------------------------ the file
 
     #[test]
@@ -358,6 +540,7 @@ mod tests {
                 maximized: true,
             }),
             stats: Stats::default(),
+            in_flight: Some(saved_match()),
         };
 
         let json = serde_json::to_string_pretty(&settings).expect("settings should serialize");
@@ -372,6 +555,7 @@ mod tests {
             difficulty: Some(Difficulty::Medium),
             window: None,
             stats: Stats::default(),
+            in_flight: None,
         };
 
         let json = serde_json::to_string(&settings).expect("settings should serialize");
@@ -633,5 +817,85 @@ mod tests {
     #[test]
     fn nothing_is_restored_without_a_display() {
         assert_eq!(fit(Rect::new(0., 0., 1000., 760.), &[]), None);
+    }
+
+    // -------------------------------------------------- the match in flight
+
+    #[test]
+    fn a_match_in_flight_survives_the_trip_through_a_snapshot() {
+        let saved = saved_match();
+
+        let round_tripped = SavedMatch::new(saved.clone().snapshot(), saved.match_points);
+
+        assert_eq!(round_tripped, saved);
+    }
+
+    #[test]
+    fn a_resolved_word_keeps_how_it_ended() {
+        for (saved, expected) in [
+            (SavedResult::Won, GameResult::Won),
+            (SavedResult::Lost, GameResult::Lost),
+        ] {
+            let in_flight = SavedMatch {
+                result: Some(saved),
+                ..saved_match()
+            };
+
+            assert_eq!(in_flight.snapshot().result, Some(expected));
+        }
+    }
+
+    #[test]
+    fn the_guessed_letters_are_stored_as_one_readable_string() {
+        let json = serde_json::to_string(&saved_match()).expect("a saved match should serialize");
+
+        assert!(json.contains(r#""guessed":"AOPT""#), "{json}");
+    }
+
+    #[test]
+    fn an_unreadable_match_costs_only_itself() {
+        // The theme is written after `in_flight` on purpose: a key that failed
+        // the whole parse would take everything, before it and after it alike.
+        let text = r#"{
+            "theme": "light",
+            "in_flight": { "word": 7 },
+            "difficulty": "Insane"
+        }"#;
+
+        let settings = Settings::parse(text);
+
+        assert_eq!(settings.in_flight, None);
+        assert_eq!(settings.theme, ThemeChoice::Light);
+        assert_eq!(settings.difficulty, Some(Difficulty::Insane));
+    }
+
+    #[test]
+    fn a_match_needs_nothing_but_a_word() {
+        let text = r#"{ "in_flight": { "word": { "word": "LAPTOP" } } }"#;
+
+        let in_flight = Settings::parse(text).in_flight.expect("a word is enough");
+
+        assert_eq!(in_flight.word.word, "LAPTOP");
+        assert_eq!(in_flight.guessed, "");
+        assert_eq!(in_flight.result, None);
+        assert_eq!(in_flight.difficulty, None);
+    }
+
+    #[test]
+    fn a_match_with_no_word_in_it_is_no_match() {
+        for text in [
+            r#"{ "in_flight": {} }"#,
+            r#"{ "in_flight": { "guessed": "AE" } }"#,
+            r#"{ "in_flight": [] }"#,
+        ] {
+            assert_eq!(Settings::parse(text).in_flight, None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_settings_file_written_before_this_existed_simply_has_no_match() {
+        let text = r#"{ "theme": "dark", "difficulty": "Easy" }"#;
+
+        assert_eq!(Settings::parse(text).in_flight, None);
     }
 }

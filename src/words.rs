@@ -45,11 +45,12 @@ use serde::{Deserialize, Serialize};
 /// word, but a list someone typed out by hand need not, and a plain `.txt`
 /// cannot.
 ///
-/// It derives `Serialize` as well as `Deserialize`, which nothing needs yet.
-/// That is for roadmap item 11: resuming the word you were on means writing the
-/// pool still to play into `settings.json`, and storing these *by value* rather
-/// than as indices into a pack is what makes editing a pack between launches
-/// harmless — you come back to the word you were actually on, clue and all.
+/// It derives `Serialize` as well as `Deserialize`, and since roadmap item 11
+/// both halves have a caller: resuming the word you were on writes the word and
+/// the pool still to play into `settings.json`, and storing them *by value*
+/// rather than as indices into a pack is what makes editing a pack between
+/// launches harmless — you come back to the word you were actually on, clue and
+/// all. See [`crate::settings::SavedMatch`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Word {
     /// The word to guess. Spaces, slashes and apostrophes are all fine; only
@@ -220,12 +221,23 @@ impl Pack {
     /// punctuation-only line would otherwise become a word with nothing in it
     /// to guess.
     pub fn into_words(self) -> Vec<Word> {
-        self.words
-            .iter()
-            .map(Word::normalized)
-            .filter(Word::is_playable)
-            .collect()
+        sanitize(self.words)
     }
+}
+
+/// Trim, uppercase, and drop anything with nothing in it to guess.
+///
+/// [`Pack::into_words`] is one caller and resuming a saved match
+/// ([`crate::game::Game::resume`]) is the other: a match read back out of
+/// `settings.json` has been through a file the player may have edited by hand,
+/// so it deserves exactly the cleanup a pack read off disk gets rather than a
+/// second, slightly different one.
+pub fn sanitize(words: Vec<Word>) -> Vec<Word> {
+    words
+        .iter()
+        .map(Word::normalized)
+        .filter(Word::is_playable)
+        .collect()
 }
 
 /// A JSON pack that would not parse.

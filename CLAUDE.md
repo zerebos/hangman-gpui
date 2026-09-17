@@ -41,19 +41,20 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 234 tests and finishes in under a second, because **not one of
+`cargo test` is 265 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
 a guarantee — the view and all its gpui imports are in the same file as the
-tests, and its sixty-three only reach free functions that take plain data and
+tests, and its sixty-nine only reach free functions that take plain data and
 return plain data: `shortcut_legend` from item 7, `plural` / `points` /
 `reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
 `guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
 `word_being_abandoned` from item 9, `switch_difficulty` / `load_words` from
 item 13, `can_show_clue` / `clue_tooltip` / `loaded_summary` from item 3, and
-`percent` / `shake_offset` / `Reveal::progress` / `Reveal::span` /
-`to_rect` / `to_bounds` alongside them. The item 13 pair is the one that takes
+`resume_or_start` / `save_match` from item 11, and `percent` /
+`shake_offset` / `Reveal::progress` / `Reveal::span` / `to_rect` / `to_bounds`
+alongside them. The item 13 pair is the one that takes
 a `&mut Game` and changes it rather than only reading — which is still inside
 the rule, because the rule is about needing no window, no `App` and no
 platform, and a `Game` needs none of the three.
@@ -100,9 +101,12 @@ does.
   taken through `Pack::display_name`, which trims it**, so `"name": "   "` is a
   pack with no name and `Game::pack_name` can go on testing emptiness alone —
   the same blank-is-absent rule `Word::said_something` applies to a category
-  and a clue. `Word` derives `Serialize` as well as `Deserialize` with no
-  caller yet — that is for item 11, which serialises the pool still to play.
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 65 unit
+  and a clue. `Word` derives `Serialize` as well as `Deserialize`, and since
+  item 11 both halves have a caller: `words::sanitize` — which
+  `Pack::into_words` is now a one-liner over — is the cleanup, and
+  `settings::SavedMatch` writes the word and the pool still to play into
+  `settings.json`.
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 82 unit
   tests in-file. Keep it that way; UI work should not need to touch it. Since
   item 3 a match is `MATCH_WORDS` (10) words *drawn* from the pack by
   `draw_match` rather than the whole pack, so `total_words` is the match and
@@ -150,6 +154,27 @@ does.
   hand back an `AbandonCharge` or nothing for the view to apply. That is what
   made them testable, and the seven tests on them fail if either order is
   reversed — verified by reversing each and watching exactly one test go red.
+  **The match in flight is a `Snapshot`, and this module decides what a
+  plausible one is.** `Game::snapshot` hands back `None` for a match that is
+  over and everything else otherwise, including a word that has just been
+  resolved — "where you were" is one rule with no exceptions in it, and the
+  alternative charges the rest of the match for closing the window on a word
+  you had just won. `Game::resume` is the way back *and* the validator: the
+  file it comes out of is one the player is invited to edit, so a snapshot is
+  checked the way a pack off disk is, and a refusal costs a fresh deal rather
+  than a panic. Four checks, each with a test: the word and the pool go through
+  `words::sanitize`; the **budget is re-derived through `budget_for` rather
+  than restored**, so a hand edit cannot buy Easy's ten guesses at Insane's
+  weight; `result` has to be one the rest of the state could have produced,
+  which is also why it is *stored* rather than derived — a word given up on is
+  lost with guesses in hand and letters still hidden, which is exactly what a
+  word still in play looks like; and a resolved word with an empty pool behind
+  it is a *finished* match, which `snapshot` never writes. `total_words` is
+  recounted rather than stored, because derived state written down twice is
+  derived state that can come back disagreeing with itself. `word_complete` is
+  free rather than a method for the same reason the item 13 pair is: `resume`
+  has to ask the win check's question of a word and a letter set that are not a
+  `Game` yet.
   `hint` spends that budget: it reveals a letter
   drawn from the game's own `rng` (so a seeded game hints reproducibly) and
   charges one wrong guess, which is why hints needed no scoring change — a
@@ -192,7 +217,7 @@ does.
   Nothing in either file assumes a budget of six wrong guesses — `parts_drawn`
   takes the budget as an argument, which is what let roadmap item 4 make the
   budget per-difficulty without touching either of them.
-- `src/stats.rs` — points, streaks and the lifetime tally, with 30 in-file
+- `src/stats.rs` — points, streaks and the lifetime tally, with 31 in-file
   tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
   for the score live so that `game.rs` needs none: `Difficulty` is mapped by
   hand there, exactly as `settings.rs` does it. Note what a custom pack can and
@@ -206,11 +231,23 @@ does.
   than in the UI. The streak spans matches, difficulties and launches on
   purpose — only a lost word ends it — so nothing in `game.rs` may reset it.
 - `src/settings.rs` — the JSON file that remembers the theme, the window
-  geometry, the difficulty and the `stats`. Like `game.rs` it holds **no GPUI
-  types** and is covered by 25 in-file tests; the conversions to `ThemeMode` and
-  `Bounds<Pixels>` live in `src/ui/mod.rs` instead. Nothing in it may fail
-  loudly: every read error falls back to `Settings::default()`, and a malformed
-  `stats` key falls back on its own rather than taking the file with it.
+  geometry, the difficulty, the `stats` and, since item 11, the match
+  `in_flight`. `SavedMatch` is the file's shape for a `game::Snapshot` plus the
+  one number a snapshot does not carry, `Session`'s `match_points`; it
+  validates **nothing**, on purpose — what a plausible match is, is a rule, and
+  the rules are `game.rs`'s. It is forgiving in the same two ways `stats` is
+  (`in_flight_or_default`), and the view writes it on **every guess** rather
+  than at exit, because a save that only happened on a clean close would still
+  hand a free reroll to anyone who killed the process mid-word. Two things are
+  deliberately not in it: the view's `clue_shown`, since a clue costs nothing
+  and re-reading one costs nothing either (revisit if item 17 ever prices it),
+  and any RNG seed — the word order is already decided by the stored pool, so
+  all a seed would still buy is which letter a hint picks. Like `game.rs` it
+  holds **no GPUI types** and is covered by 32 in-file tests; the conversions
+  to `ThemeMode` and `Bounds<Pixels>` live in `src/ui/mod.rs` instead. Nothing
+  in it may fail loudly: every read error falls back to `Settings::default()`,
+  and a malformed `stats` key falls back on its own rather than taking the file
+  with it.
 - `src/audio.rs` — **two** implementations of `Audio` with identical public
   signatures behind `#[cfg(feature = "sound")]` / `#[cfg(not(...))]`: a real one
   and a zero-sized no-op. That is what keeps `#[cfg]` out of every UI call site.

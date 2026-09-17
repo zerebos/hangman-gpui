@@ -282,6 +282,22 @@ impl Session {
         }
     }
 
+    /// Start a session on a match that is already under way — the other half
+    /// of [`crate::game::Game::resume`].
+    ///
+    /// The match score is the one thing about a match in flight that is not in
+    /// the [`Game`](crate::game::Game): `record_word` adds a word's points to
+    /// both the lifetime tally and the match, and only the lifetime half of
+    /// that survives a launch by itself. Without this the resumed match would
+    /// come back with the right word and the wrong score, and its summary
+    /// would quote points it had not added up.
+    pub fn resume(stats: Stats, match_points: u32) -> Self {
+        Self {
+            match_points,
+            stats,
+        }
+    }
+
     /// The lifetime tally.
     pub fn stats(&self) -> &Stats {
         &self.stats
@@ -858,5 +874,21 @@ mod tests {
         assert_eq!(stats.words_played(), 0);
         assert_eq!(stats.best_streak, 0);
         assert!(!stats.is_empty());
+    }
+
+    #[test]
+    fn a_resumed_session_keeps_the_match_score_and_the_tally_apart() {
+        let mut played = Session::new(Stats::default());
+        played.record_word(Some(Difficulty::Insane), GameResult::Won, 5);
+        played.record_word(Some(Difficulty::Insane), GameResult::Won, 4);
+
+        // What a launch has to put back together: the lifetime tally comes off
+        // its own key in the settings file, the match score off the saved
+        // match beside it.
+        let resumed = Session::resume(played.stats().clone(), played.match_points());
+
+        assert_eq!(resumed.match_points(), played.match_points());
+        assert_ne!(resumed.match_points(), 0);
+        assert_eq!(resumed.stats(), played.stats());
     }
 }

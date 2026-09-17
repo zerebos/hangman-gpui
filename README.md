@@ -113,10 +113,10 @@ those come from the C library, not from the game.)
 
 ## Settings
 
-The theme, the window's size and position, and the difficulty you last picked
-are remembered between launches. They are written to a small JSON file the
-moment you change one of them — the window's geometry when you close it — in the
-usual place for your platform:
+The theme, the window's size and position, the difficulty you last picked and
+the match you were in the middle of are all remembered between launches. They
+are written to a small JSON file the moment you change one of them — the
+window's geometry when you close it — in the usual place for your platform:
 
 | Platform | Path |
 | --- | --- |
@@ -136,6 +136,25 @@ usual place for your platform:
       "height": 800.0
     },
     "maximized": false
+  },
+  "in_flight": {
+    "word": {
+      "word": "LAPTOP",
+      "category": "Technology",
+      "clue": "A computer you can close."
+    },
+    "guessed": "AOPT",
+    "wrong_guesses": 1,
+    "remaining": [
+      { "word": "BAGEL", "category": "Food" }
+    ],
+    "difficulty": "Medium",
+    "pack": "Medium",
+    "pack_words": 30,
+    "guess_budget": 8,
+    "words_won": 2,
+    "words_lost": 1,
+    "match_points": 520
   },
   "stats": {
     "points": 9210,
@@ -177,9 +196,39 @@ a second monitor can never strand the window somewhere you cannot reach it.
 
 The lifetime stats — points, the streak, the best streak, and the win/loss
 tally broken down by difficulty — are saved in the same file, and written the
-moment a word ends. The score of the *match* you are playing is not: it belongs
-to the match and starts again from zero when you pick a difficulty or load a new
-word list. The streak deliberately does neither, which is the point of it.
+moment a word ends. The score of the *match* you are playing is saved too, but
+under `in_flight` rather than here: it belongs to the match, and it starts again
+from zero when you pick a difficulty or load a new word list. The streak
+deliberately does neither, which is the point of it.
+
+### Resuming the match you were in
+
+`in_flight` is the word you were on and everything around it: the letters you
+had guessed, the wrong guesses they cost, the words still to be dealt, the tally
+so far and what the match has scored. Close the window in the middle of a word
+and the next launch puts you back on it. That is worth having on its own — it
+is where you were — and it also shuts the last silent way out of a word you are
+losing, because quitting and relaunching used to be a free reroll that kept your
+streak.
+
+It is written on every guess rather than as the window closes, so killing the
+process is not a way round it either. The words are stored whole, with their
+categories and clues, rather than as positions in a pack: rewrite the pack, or
+delete it, and the match you were in the middle of still comes back.
+
+A match that is *over* is not saved — there is nothing to come back to, so the
+next launch deals a fresh one. Two smaller things are deliberately not saved:
+whether you had read the word's clue, since a clue costs nothing and reading it
+again costs nothing either, and which letter a hint would pick, which is drawn
+fresh.
+
+Like everything else in this file it is checked rather than trusted, and the
+worst a broken `in_flight` can do is cost you the word you were on: a match that
+does not describe one anybody could be in the middle of is thrown away and a
+fresh one dealt. The guess budget is the one field that is re-derived rather
+than restored — a difficulty's budget is the difficulty's, however the file
+reads — so editing the file cannot buy you Easy's ten guesses at Insane's
+weight.
 
 ## Controls
 
@@ -427,26 +476,13 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. Sixteen ideas have been agreed for where it goes next; eleven have
-shipped and five are open. The numbering is the order they were argued about
+mirroring it. Sixteen ideas have been agreed for where it goes next; twelve have
+shipped and four are open. The numbering is the order they were argued about
 rather than any committed order, and it stays as it is even as items land —
 commit messages, pull requests and `CLAUDE.md` all cite these by number.
 
 ### Still to do
 
-- **11. Resume the word you were on.** Closing the window mid-word is the last
-  silent way out of a word you are losing: the settings file keeps the theme,
-  the window, the difficulty and the lifetime stats, and nothing at all about
-  the word in flight, so quitting and relaunching is a free reroll that keeps
-  your streak. Charging a loss on close would shut that door, but it would
-  also tax someone who just quit for the night, and invisibly — they would
-  never see it happen. Saving the word instead means quitting is not an escape
-  because you come back to it: the word, the letters guessed, the wrong-guess
-  count, the pool still to play and the match's points, restored at launch.
-  That needs a new key in [`Settings`](src/settings.rs) and a way to rehydrate
-  a [`Game`](src/game.rs) from one, both under the existing rule that a
-  malformed value falls back rather than failing loudly. It is worth having on
-  its own account as much as for the hole it closes.
 - **12. Decide which other moments deserve a dialog.** Item 10 answered whether
   gpui-kit's dialogs are worth using; it did not answer where else to put
   one, and the answer is not "everywhere destructive" — a game that stops to
@@ -467,8 +503,8 @@ commit messages, pull requests and `CLAUDE.md` all cite these by number.
   channel is on the happier event, which is backwards. That one probably wants
   gpui-kit's notification rather than a dialog, and it is worth fixing
   whichever way the other three go. Closing the window mid-word is
-  deliberately not on this list: item 11 closes that hole by remembering the
-  word instead of asking about it, and the two are alternatives.
+  deliberately not on this list: item 11 has closed that hole by remembering
+  the word instead of asking about it, and the two were alternatives.
 
 The next four came out of the item 3 discussion and are **to be considered**
 rather than agreed: each is worth doing only if the thing behind it turns out to
@@ -588,7 +624,15 @@ matter.
   window's key context, so a letter typed at a dialog is guessed on the board
   behind it unless it is guarded. Its backdrop dim and its placement were the
   two things worth overriding. Which *other* moments deserve one is item 12.
-
+- **11. Resume the word you were on.** Closing the window mid-word was the
+  last silent way out of a word you were losing: quitting and relaunching was a
+  free reroll that kept your streak. The settings file now carries an
+  `in_flight` key — the word, the letters guessed, the wrong-guess count, the
+  pool still to play, the per-match tally and the match's score — written on
+  every guess rather than at exit, and the next launch picks the match up where
+  it was left. Charging a loss on close was the alternative and was turned down:
+  it taxes someone who quit for the night, and invisibly. See
+  [Resuming the match you were in](#resuming-the-match-you-were-in).
 - **13. Make the abandon rule testable.** The two rules about walking out on a
   part-played word are both properties of the *order* of the statements that
   throw it away, so item 9's "a free function over a `&Game`" could not express
