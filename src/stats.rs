@@ -264,8 +264,13 @@ impl Stats {
 /// earned in the match on screen.
 ///
 /// This is the one place the UI has to hold, so the UI itself does no
-/// arithmetic. `match_points` is the only part that is not persisted: it
-/// belongs to the match being played and dies with it.
+/// arithmetic. The two halves are persisted separately and by different
+/// owners: `stats` is its own key in [`crate::settings`] and is written the
+/// moment a word ends, while `match_points` rides with the match in flight
+/// under `in_flight`, because it belongs to that match and to nothing else.
+/// Until roadmap item 11 it was simply not saved at all and died with the
+/// launch — [`Session::resume`] is what put it back, and
+/// [`Session::start_match`] is still what ends it.
 #[derive(Debug, Default, Clone)]
 pub struct Session {
     match_points: u32,

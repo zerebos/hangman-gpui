@@ -534,10 +534,18 @@ impl Game {
 
         let complete = word_complete(&current.word, &guessed);
         let spent = snapshot.wrong_guesses >= guess_budget;
-        let plausible = if complete {
+        // A spent budget is asked about *first*, and it rules the word out as
+        // well as the result. The guess that empties the budget ends the game
+        // as a loss — `guess` checks the win before it charges, and `hint`
+        // refuses at one guess left precisely so it can never be the guess that
+        // loses — so nothing can complete a word after that, and a completed
+        // word with nothing left to spend is a state no play could reach. Ask
+        // `complete` first and a hand edit resumes as a win with a full gallows
+        // drawn behind it.
+        let plausible = if spent {
+            !complete && snapshot.result == Some(GameResult::Lost)
+        } else if complete {
             snapshot.result == Some(GameResult::Won)
-        } else if spent {
-            snapshot.result == Some(GameResult::Lost)
         } else {
             matches!(snapshot.result, None | Some(GameResult::Lost))
         };
@@ -2429,11 +2437,40 @@ mod tests {
     }
 
     #[test]
+    fn a_completed_word_with_a_spent_budget_is_not_resumed() {
+        // Two words, not one: with an empty pool behind it a resolved word is
+        // refused by the finished-match check instead, and this test would
+        // pass without ever reaching the rule it is about.
+        let game = Game::from_words_with_seed(["Laptop", "Bagel"].map(str::to_string).to_vec(), 9)
+            .expect("the fixture list has words in it");
+        let live = game.snapshot().expect("the match is running");
+
+        // Unreachable by playing: the guess that empties the budget loses the
+        // word before any later one could finish it. Reachable by editing the
+        // file, where it would resume as a win under a full gallows.
+        for result in [Some(GameResult::Won), Some(GameResult::Lost), None] {
+            let snapshot = Snapshot {
+                guessed: live.current.word.chars().collect(),
+                wrong_guesses: live.guess_budget,
+                result,
+                ..live.clone()
+            };
+
+            assert!(Game::resume(snapshot).is_none(), "{result:?}");
+        }
+    }
+
+    #[test]
     fn more_wrong_guesses_than_the_budget_allows_is_not_resumed() {
-        let game = game_with_word("LAPTOP");
+        let mut game = match_in_flight();
+        // Given up on, so the snapshot is a *plausible* loss in every other
+        // respect: without the budget check the count would sail through the
+        // "a spent budget is a loss" branch and resume a word carrying more
+        // wrong guesses than the gallows has stages to spend them on.
+        game.give_up();
         let snapshot = Snapshot {
             wrong_guesses: 99,
-            ..game.snapshot().expect("the match is running")
+            ..game.snapshot().expect("the match is still running")
         };
 
         assert!(Game::resume(snapshot).is_none());
