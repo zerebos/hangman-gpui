@@ -41,7 +41,7 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 265 tests and finishes in under a second, because **not one of
+`cargo test` is 266 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
@@ -106,7 +106,7 @@ does.
   `Pack::into_words` is now a one-liner over — is the cleanup, and
   `settings::SavedMatch` writes the word and the pool still to play into
   `settings.json`.
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 82 unit
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 83 unit
   tests in-file. Keep it that way; UI work should not need to touch it. Since
   item 3 a match is `MATCH_WORDS` (10) words *drawn* from the pack by
   `draw_match` rather than the whole pack, so `total_words` is the match and
