@@ -115,6 +115,29 @@ const RESET_NOTHING: &str = "There is nothing saved yet, so this costs you nothi
 const RESET_FOREVER: &str = "go back to zero in every difficulty, along with the score of the match you \
      are playing. There is no undo, though the word itself is not touched.";
 
+/// The two confirmations item 12 added, for the two clicks that throw a
+/// part-played word away: a difficulty pill, and the file picker.
+///
+/// Both are asked *only* when the click would actually cost a word — see
+/// [`switch_needs_confirming`] — because a confirm on a click that costs
+/// nothing is the nag that teaches people to dismiss confirms unread.
+///
+/// `Change Word` is deliberately not one of them. It is the same loss, but the
+/// button says `Give up on this word` and the shortcut strip repeats it, so
+/// the intent is already stated before the click and a dialog would only be
+/// asking a player to agree with themselves.
+const ABANDON_SWITCH_TITLE: &str = "Switch difficulty?";
+const ABANDON_SWITCH_OK: &str = "Switch anyway";
+const ABANDON_LOAD_TITLE: &str = "Open a word list?";
+const ABANDON_LOAD_OK: &str = "Open anyway";
+const ABANDON_CANCEL: &str = "Keep playing";
+/// The first half of what an abandon costs, and the half that is always true.
+///
+/// It says "this word" and never the word itself, for the reason the pill
+/// tooltip does: a dialog raised mid-word is read while the word is still
+/// being played, and `game.word()` is the answer.
+const ABANDON_WORD: &str = "This word counts as a loss";
+
 /// The alert line after a hint lands. It names the letter, because the word
 /// row is not the only place the player is looking, and it says what the hint
 /// cost, because the pip that just turned red does not explain itself.
@@ -800,6 +823,94 @@ enum LoadOutcome {
     Failed,
 }
 
+/// Which click is being confirmed, and therefore what the dialog says and what
+/// answering yes does.
+///
+/// One type rather than two near-identical methods on the view: the two clicks
+/// cost exactly the same thing — the word, the streak and the match score — so
+/// they ask the same question and differ only in the two strings naming the
+/// button that was pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Abandon {
+    /// A difficulty pill that would deal a fresh pool from that difficulty.
+    Switch(Difficulty),
+    /// The file picker, which would do the same from a file.
+    OpenList,
+}
+
+impl Abandon {
+    /// The question, in the terms of the button that was pressed.
+    fn title(self) -> &'static str {
+        match self {
+            Self::Switch(_) => ABANDON_SWITCH_TITLE,
+            Self::OpenList => ABANDON_LOAD_TITLE,
+        }
+    }
+
+    /// The button that goes through with it. Never a bare `OK`: a confirm is
+    /// only worth asking if the answer can be read without the question.
+    fn ok_text(self) -> &'static str {
+        match self {
+            Self::Switch(_) => ABANDON_SWITCH_OK,
+            Self::OpenList => ABANDON_LOAD_OK,
+        }
+    }
+}
+
+/// What the confirmation says the click is about to cost.
+///
+/// Pure, and separate from the dialog that shows it, for the reason
+/// [`reset_stats_summary`] is: the component can only be judged by eye, but the
+/// sentence in it is arithmetic over the session and a test can hold it to
+/// account.
+///
+/// It takes the two numbers rather than a [`Session`] so that it *cannot* reach
+/// the word — this is read while the word is still being played, and naming it
+/// would print the answer. The word is spoken for by [`ABANDON_WORD`], which
+/// says "this word".
+///
+/// The match score is the half the pill tooltip never said and the notice
+/// afterwards never says either: switching or loading starts a fresh match, so
+/// the points the match on screen has earned go with the word. It is left out
+/// entirely at zero, because a match that has scored nothing is not something
+/// being taken away — and a match you are two losses into is one you may well
+/// be glad to see restarted.
+fn abandon_summary(streak: u32, match_points: u32) -> String {
+    let word = match streak {
+        0 => format!("{ABANDON_WORD}."),
+        streak => format!("{ABANDON_WORD}, ending your streak of {streak}."),
+    };
+    match match_points {
+        0 => word,
+        scored => format!(
+            "{word} The match starts again from zero, losing its score of {}.",
+            points(scored)
+        ),
+    }
+}
+
+/// Whether a click on `difficulty`'s pill has to be confirmed before it is
+/// acted on.
+///
+/// Both halves are the rules module's own rather than a copy of them here.
+/// [`Game::would_switch_to`] is the one that stops the dialog appearing on a
+/// click that changes nothing — the pills are a `ButtonGroup`, so the selected
+/// one still fires, and [`switch_difficulty`] refuses it while the match is
+/// running. Asking "are you sure?" about a click that was going to be ignored
+/// is the worst kind of confirm: it teaches the player that the dialog is
+/// noise, on the one control where it is not.
+///
+/// [`Game::has_word_to_lose`] is the other half, and it is why this is a
+/// question at all: picking a difficulty before you have played a letter costs
+/// nothing and must not stop to ask.
+///
+/// This is also the caller `CLAUDE.md` says `would_switch_to` stays public
+/// for — one that needs the answer without committing to the switch. Item 13
+/// left it with none outside `game.rs`; the confirm is it.
+fn switch_needs_confirming(game: &Game, difficulty: Difficulty) -> bool {
+    game.would_switch_to(difficulty) && game.has_word_to_lose()
+}
+
 /// The word that is about to be thrown away, if throwing it away costs
 /// anything: its text, and the difficulty it belongs to.
 ///
@@ -1284,6 +1395,72 @@ impl HangmanView {
         });
     }
 
+    /// Ask before a click throws a part-played word away, then do it if told
+    /// to.
+    ///
+    /// The second and third dialogs in the window, and deliberately a rung
+    /// below [`Self::confirm_reset_stats`] in how they look: that one is the
+    /// only irreversible thing here — a tally built up over weeks, gone — so it
+    /// keeps the red icon and the `Danger` button. These cost one word, one
+    /// streak and one match score, which is real but is a game you can play
+    /// again, so they take the warning colour and the `Warning` button instead.
+    /// Three confirms that all shout the same way would say nothing about which
+    /// of them is worth reading twice.
+    ///
+    /// Everything [`Self::confirm_reset_stats`] documents about the component
+    /// applies here too: the builder is an `Fn` re-run every frame the dialog is
+    /// up, so the weak handle is cloned inside it rather than moved, and the
+    /// callbacks are plain closures rather than `cx.listener`s.
+    fn confirm_abandon(&mut self, kind: Abandon, window: &mut Window, cx: &mut Context<Self>) {
+        let summary = abandon_summary(self.session.stats().streak, self.session.match_points());
+        let view = cx.weak_entity();
+
+        window.open_alert_dialog(cx, move |alert, window, cx| {
+            let view = view.clone();
+            alert
+                .mt(px(dialog_top_margin(
+                    window.viewport_size().height.as_f32(),
+                )))
+                .icon(Icon::new(IconName::TriangleAlert).text_color(cx.theme().warning))
+                .title(kind.title())
+                .description(summary.clone())
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(kind.ok_text())
+                        .ok_variant(ButtonVariant::Warning)
+                        .cancel_text(ABANDON_CANCEL)
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    let view = view.clone();
+                    // Deferred so the work happens after the dialog this `true`
+                    // is closing has actually gone. It matters for the file
+                    // picker: `prompt_for_paths` asks the platform for a window
+                    // straight away, and opening an OS dialog on top of an alert
+                    // that is still painted is a thing only the platform doing
+                    // it gets to decide the look of.
+                    window.defer(cx, move |window, cx| {
+                        view.update(cx, |this, cx| this.commit_abandon(kind, window, cx))
+                            .ok();
+                    });
+                    true
+                })
+        });
+    }
+
+    /// Go through with whatever [`Self::confirm_abandon`] asked about.
+    ///
+    /// Both arms call the same method the unconfirmed path calls, so the confirm
+    /// is a gate in front of the work rather than a second copy of it — the
+    /// charge, the fresh match and the notice afterwards all stay where item 13
+    /// put them.
+    fn commit_abandon(&mut self, kind: Abandon, window: &mut Window, cx: &mut Context<Self>) {
+        match kind {
+            Abandon::Switch(difficulty) => self.set_difficulty(difficulty, cx),
+            Abandon::OpenList => self.prompt_for_word_list(window, cx),
+        }
+    }
+
     /// Throw the lifetime tally away, once [`Self::confirm_reset_stats`] has
     /// been answered.
     fn reset_stats(&mut self, cx: &mut Context<Self>) {
@@ -1328,6 +1505,24 @@ impl HangmanView {
             .record_word(charge.difficulty, GameResult::Lost, 0);
         let word = charge.word;
         Notice::bad(format!("Leaving {word} counts as a loss in my book."))
+    }
+
+    /// A click on a difficulty pill, before anything has been decided about it.
+    ///
+    /// The confirm lives here rather than inside [`Self::set_difficulty`] so
+    /// that the one caller that must never stop to ask — the dialog's own OK —
+    /// cannot reach it and raise a second one.
+    fn on_difficulty_clicked(
+        &mut self,
+        difficulty: Difficulty,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if switch_needs_confirming(&self.game, difficulty) {
+            self.confirm_abandon(Abandon::Switch(difficulty), window, cx);
+            return;
+        }
+        self.set_difficulty(difficulty, cx);
     }
 
     fn set_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
@@ -1393,6 +1588,27 @@ impl HangmanView {
             return;
         }
 
+        // The confirm goes *before* the picker rather than after it, for the
+        // reason item 12 put this on the list at all: the picker is the only
+        // thing standing between the click and the loss, and it says nothing
+        // about the word being at stake. Asking afterwards would put the
+        // warning after the work of finding a file. Cancelling the picker
+        // still costs nothing either way — `load_words` is what charges, and
+        // it never runs.
+        if self.game.has_word_to_lose() {
+            self.confirm_abandon(Abandon::OpenList, window, cx);
+            return;
+        }
+        self.prompt_for_word_list(window, cx);
+    }
+
+    /// Put the platform's file picker up and hand whatever comes back to
+    /// [`Self::load_word_list`].
+    ///
+    /// Split from [`Self::on_open_word_list`] so the confirm and the dialog's
+    /// own OK both reach exactly this and nothing else — the gate is asked once,
+    /// by whoever opened it.
+    fn prompt_for_word_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The native picker answers on a channel, so the rest of this runs in a
         // task. `PathPromptOptions` has no extension filter, hence the prompt text.
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -1572,11 +1788,11 @@ impl HangmanView {
                                 pill
                             }
                         }))
-                        .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
+                        .on_click(cx.listener(|this, clicked: &Vec<usize>, window, cx| {
                             if let Some(difficulty) =
                                 clicked.first().and_then(|ix| Difficulty::ALL.get(*ix))
                             {
-                                this.set_difficulty(*difficulty, cx);
+                                this.on_difficulty_clicked(*difficulty, window, cx);
                             }
                         })),
                 ),
@@ -2579,14 +2795,15 @@ mod tests {
     // this module's `gpui_kit::*` glob — and with it gpui's own `test` macro,
     // which shadows the built-in attribute and blows the recursion limit.
     use super::{
+        ABANDON_LOAD_OK, ABANDON_LOAD_TITLE, ABANDON_SWITCH_OK, ABANDON_SWITCH_TITLE, Abandon,
         AbandonCharge, CLUE_TOOLTIP, CLUE_TOOLTIP_NONE, CLUE_TOOLTIP_SHOWN, CUSTOM_LIST_SUBTITLE,
         DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, GUESS_REVEAL, HINT_TOOLTIP,
         HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, LoadOutcome, RESET_NOTHING,
-        SHAKE_DISTANCE, Shortcut, Stats, SwitchOutcome, WIN_REVEAL, can_show_clue, clue_tooltip,
-        dialog_top_margin, guess_count, hint_tooltip, key_state, load_words, loaded_summary,
-        match_summary, percent, plural, points, reset_stats_summary, resume_or_start, save_match,
-        shake_offset, shortcut_legend, subtitle, switch_difficulty, to_bounds, to_rect,
-        word_being_abandoned,
+        SHAKE_DISTANCE, Shortcut, Stats, SwitchOutcome, WIN_REVEAL, abandon_summary, can_show_clue,
+        clue_tooltip, dialog_top_margin, guess_count, hint_tooltip, key_state, load_words,
+        loaded_summary, match_summary, percent, plural, points, reset_stats_summary,
+        resume_or_start, save_match, shake_offset, shortcut_legend, subtitle, switch_difficulty,
+        switch_needs_confirming, to_bounds, to_rect, word_being_abandoned,
     };
     use crate::game::{Difficulty, Game, GameResult};
     use crate::settings::{Rect, SavedMatch, Settings};
@@ -3468,6 +3685,165 @@ mod tests {
 
         assert_eq!(outcome, SwitchOutcome::Dealt(None));
         assert!(!game.is_match_over(), "the replay did not start a match");
+    }
+
+    // ------------------------------------------------- roadmap item 12: asking
+    //
+    // The dialog itself is gpui-kit's and can only be judged by eye. What these
+    // hold to account is the pair of rules in front of it: *when* it is raised,
+    // and *what it says* — the two halves that decide whether a confirm is worth
+    // having or is the nag that teaches people to dismiss confirms unread.
+
+    #[test]
+    fn a_pill_click_that_costs_nothing_never_stops_to_ask() {
+        // Nothing has been played, so every pill including the selected one is
+        // free. A dialog here would be the whole failure mode of this feature.
+        let game = Game::with_seed(Difficulty::Easy, 7);
+
+        for difficulty in Difficulty::ALL {
+            assert!(
+                !switch_needs_confirming(&game, difficulty),
+                "{difficulty:?} asked about an untouched word",
+            );
+        }
+    }
+
+    #[test]
+    fn a_pill_click_that_would_throw_a_played_word_away_asks_first() {
+        for to in Difficulty::ALL {
+            if to == Difficulty::Easy {
+                continue;
+            }
+            let mut game = Game::with_seed(Difficulty::Easy, 7);
+            guess_wrong(&mut game);
+
+            assert!(
+                switch_needs_confirming(&game, to),
+                "Easy -> {to:?} went through without asking",
+            );
+        }
+    }
+
+    #[test]
+    fn re_clicking_the_difficulty_in_play_does_not_ask_either() {
+        // The click `switch_difficulty` refuses outright. Asking about it would
+        // be the worst confirm in the window: a question about something that
+        // was never going to happen, on the one control where the question
+        // matters. This is the half `Game::would_switch_to` answers, and it is
+        // why the predicate is read here rather than `has_word_to_lose` alone.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        guess_wrong(&mut game);
+
+        assert!(!switch_needs_confirming(&game, Difficulty::Easy));
+    }
+
+    #[test]
+    fn a_finished_word_is_not_worth_asking_about() {
+        // Two ways for the word to be over, and neither leaves anything to pay
+        // for: the match is scored, or the player gave up on the word.
+        let mut done = Game::with_seed(Difficulty::Easy, 7);
+        lose_the_match(&mut done);
+        assert!(!switch_needs_confirming(&done, Difficulty::Easy));
+
+        let mut given_up = Game::with_seed(Difficulty::Easy, 7);
+        guess_wrong(&mut given_up);
+        given_up.give_up();
+        assert!(!switch_needs_confirming(&given_up, Difficulty::Insane));
+    }
+
+    #[test]
+    fn the_confirmation_names_the_button_that_was_pressed() {
+        // Both buttons say what they do rather than `OK`, because the dialog is
+        // raised by two different clicks and "yes" has to be readable without
+        // scrolling back up to the question.
+        assert_eq!(
+            Abandon::Switch(Difficulty::Hard).title(),
+            ABANDON_SWITCH_TITLE
+        );
+        assert_eq!(
+            Abandon::Switch(Difficulty::Hard).ok_text(),
+            ABANDON_SWITCH_OK
+        );
+        assert_eq!(Abandon::OpenList.title(), ABANDON_LOAD_TITLE);
+        assert_eq!(Abandon::OpenList.ok_text(), ABANDON_LOAD_OK);
+        assert_ne!(
+            Abandon::Switch(Difficulty::Hard).title(),
+            Abandon::OpenList.title()
+        );
+    }
+
+    #[test]
+    fn the_word_is_the_only_thing_an_untouched_score_costs() {
+        // Nothing banked and no streak, so there is one thing to say and the
+        // sentence says only it. The alternative — a paragraph that mentions a
+        // streak of 0 and a score of 0 — is how a confirm becomes wallpaper.
+        assert_eq!(abandon_summary(0, 0), "This word counts as a loss.");
+    }
+
+    #[test]
+    fn a_streak_is_named_because_it_is_the_part_that_took_time() {
+        assert_eq!(
+            abandon_summary(4, 0),
+            "This word counts as a loss, ending your streak of 4.",
+        );
+        assert_eq!(
+            abandon_summary(1, 0),
+            "This word counts as a loss, ending your streak of 1.",
+        );
+    }
+
+    #[test]
+    fn the_match_score_is_named_because_nothing_else_ever_says_it() {
+        // Switching or loading starts a fresh match, so the points the match on
+        // screen has earned go with the word. The pill tooltip never said so and
+        // the notice afterwards does not either — this sentence is the only
+        // place the player is told.
+        assert_eq!(
+            abandon_summary(0, 520),
+            "This word counts as a loss. The match starts again from zero, \
+             losing its score of 520 points.",
+        );
+        assert_eq!(
+            abandon_summary(3, 520),
+            "This word counts as a loss, ending your streak of 3. The match \
+             starts again from zero, losing its score of 520 points.",
+        );
+    }
+
+    #[test]
+    fn one_point_is_still_one_point() {
+        // The count is placed last in the sentence for this reason: every other
+        // phrasing tried put a verb after it and had to agree with it.
+        assert!(abandon_summary(0, 1).ends_with("losing its score of 1 point."));
+    }
+
+    #[test]
+    fn a_match_that_has_scored_nothing_is_not_described_as_a_loss() {
+        // Two words in and both lost: restarting the match takes nothing away,
+        // and may be a favour. Only the word is charged for, so only the word is
+        // mentioned.
+        assert_eq!(abandon_summary(0, 0), abandon_summary(0, 0));
+        assert!(!abandon_summary(2, 0).contains("match"));
+    }
+
+    #[test]
+    fn the_confirmation_cannot_name_the_word_it_is_about() {
+        // The near-miss this guards against is real: an early version of the
+        // pill tooltip interpolated `game.word()` and would have printed the
+        // answer to anyone who hovered mid-guess. A dialog is read under exactly
+        // the same conditions. `abandon_summary` takes two numbers and no word,
+        // so the leak is not a rule to remember but a thing the signature will
+        // not let you write — and this is the test that fails if the signature
+        // grows a `&Game`.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        guess_wrong(&mut game);
+        let summary = abandon_summary(9, 990);
+
+        assert!(
+            !summary.contains(game.word()),
+            "the confirmation printed the answer",
+        );
+        assert!(summary.contains("This word"));
     }
 
     #[test]
