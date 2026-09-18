@@ -633,7 +633,12 @@ matter.
   which never dealt a word in the first place. **`Change Word` was left
   alone** — it is the same loss, but the button says `Give up on this word` and
   the shortcut strip repeats it, so a dialog would only be asking you to agree
-  with yourself. Closing the window mid-word
+  with yourself. The fourth moment was not a dialog question at all: a word list
+  that would not parse put a red line under the board while one that parsed got
+  a floating notification, which put the louder channel on the happier event.
+  Both outcomes now speak in the same place, and the failure is the one that
+  waits to be dismissed — the board does not change when a file fails, so the
+  message is the only sign the click did anything. Closing the window mid-word
   is deliberately not on this list: item 11 closed that hole by remembering the
   word instead of asking about it, and the two were alternatives.
 - **13. Make the abandon rule testable.** The two rules about walking out on a

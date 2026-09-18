@@ -16,6 +16,7 @@ use gpui_kit::component::button::{
 };
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Root, Selectable as _,
@@ -889,6 +890,16 @@ fn abandon_summary(streak: u32, match_points: u32) -> String {
     }
 }
 
+/// The key both word-list notifications are pushed under.
+///
+/// `Notification::id` makes a push *replace* the toast already showing under
+/// the same key rather than stack a second one beside it, and both outcomes of
+/// `Open word list…` share this one on purpose: what is on screen is then
+/// always "what your last word-list click did", never a pile of what the last
+/// four did. It is also what keeps the non-autohiding error from outstaying
+/// itself — the next load, successful or not, takes its place.
+struct WordListNotice;
+
 /// Whether a click on `difficulty`'s pill has to be confirmed before it is
 /// acted on.
 ///
@@ -1655,12 +1666,36 @@ impl HangmanView {
                 self.last_guess = None;
                 self.clue_shown = false;
                 window.push_notification(
-                    loaded_summary(self.game.pack_words(), self.game.total_words()),
+                    Notification::success(loaded_summary(
+                        self.game.pack_words(),
+                        self.game.total_words(),
+                    ))
+                    .id::<WordListNotice>(),
                     cx,
                 );
                 self.persist();
             }
-            LoadOutcome::Failed => self.notice = Some(Notice::bad(FILE_ERROR)),
+            // The other half of item 12, and the one that is not a dialog. A
+            // file that will not read used to put `FILE_ERROR` on the board's
+            // notice line while a file that read got a floating notification —
+            // the louder channel on the happier event, and the quieter one on
+            // the only outcome where nothing visible changes. Both outcomes of
+            // the same click now speak in the same place, and this one is the
+            // one that waits to be dismissed: the board is untouched, so the
+            // message is the only evidence the click did anything at all, and a
+            // toast that has already faded leaves the player with none.
+            //
+            // The notice line is deliberately left alone rather than cleared.
+            // It belongs to the word on the board, the word on the board
+            // survived, and overwriting it here used to throw away real
+            // feedback about it — "That cost you a guess: E" replaced by a
+            // sentence about a file.
+            LoadOutcome::Failed => window.push_notification(
+                Notification::error(FILE_ERROR)
+                    .id::<WordListNotice>()
+                    .autohide(false),
+                cx,
+            ),
         }
         cx.notify();
     }

@@ -589,3 +589,17 @@ in `cx.theme().red` and `ButtonVariant::Danger`. The two abandons cost one word,
 one streak and one match score, which is real but replayable, so they take
 `cx.theme().warning` and `ButtonVariant::Warning`. Three dialogs that all shout
 the same way say nothing about which one to read twice.
+
+**Paired outcomes belong in the same channel.** A word list that loads and one
+that will not now both go through `push_notification`
+(`Notification::success` / `Notification::error`) rather than one of each. The
+error is the one with `autohide(false)`: nothing on the board changes when a
+file fails, so the toast is the only evidence the click did anything, and the
+board's notice line is left alone because it belongs to the word — which the
+failed load did not touch. Both are pushed under one
+`Notification::id::<WordListNotice>()`, which makes a push replace the toast
+already under that key instead of stacking beside it: what is showing is always
+what the last `Open word list…` click did, and a successful load clears the
+error that was waiting to be dismissed. The ✕ on a toast is `invisible()` until
+the toast is hovered (`notification.rs:449-453`), so a sticky one that could
+only be dismissed by hand would be a worse idea than it looks.
