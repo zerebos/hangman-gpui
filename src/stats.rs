@@ -264,8 +264,13 @@ impl Stats {
 /// earned in the match on screen.
 ///
 /// This is the one place the UI has to hold, so the UI itself does no
-/// arithmetic. `match_points` is the only part that is not persisted: it
-/// belongs to the match being played and dies with it.
+/// arithmetic. The two halves are persisted separately and by different
+/// owners: `stats` is its own key in [`crate::settings`] and is written the
+/// moment a word ends, while `match_points` rides with the match in flight
+/// under `in_flight`, because it belongs to that match and to nothing else.
+/// Until roadmap item 11 it was simply not saved at all and died with the
+/// launch — [`Session::resume`] is what put it back, and
+/// [`Session::start_match`] is still what ends it.
 #[derive(Debug, Default, Clone)]
 pub struct Session {
     match_points: u32,
@@ -278,6 +283,22 @@ impl Session {
     pub fn new(stats: Stats) -> Self {
         Self {
             match_points: 0,
+            stats,
+        }
+    }
+
+    /// Start a session on a match that is already under way — the other half
+    /// of [`crate::game::Game::resume`].
+    ///
+    /// The match score is the one thing about a match in flight that is not in
+    /// the [`Game`](crate::game::Game): `record_word` adds a word's points to
+    /// both the lifetime tally and the match, and only the lifetime half of
+    /// that survives a launch by itself. Without this the resumed match would
+    /// come back with the right word and the wrong score, and its summary
+    /// would quote points it had not added up.
+    pub fn resume(stats: Stats, match_points: u32) -> Self {
+        Self {
+            match_points,
             stats,
         }
     }
@@ -858,5 +879,21 @@ mod tests {
         assert_eq!(stats.words_played(), 0);
         assert_eq!(stats.best_streak, 0);
         assert!(!stats.is_empty());
+    }
+
+    #[test]
+    fn a_resumed_session_keeps_the_match_score_and_the_tally_apart() {
+        let mut played = Session::new(Stats::default());
+        played.record_word(Some(Difficulty::Insane), GameResult::Won, 5);
+        played.record_word(Some(Difficulty::Insane), GameResult::Won, 4);
+
+        // What a launch has to put back together: the lifetime tally comes off
+        // its own key in the settings file, the match score off the saved
+        // match beside it.
+        let resumed = Session::resume(played.stats().clone(), played.match_points());
+
+        assert_eq!(resumed.match_points(), played.match_points());
+        assert_ne!(resumed.match_points(), 0);
+        assert_eq!(resumed.stats(), played.stats());
     }
 }

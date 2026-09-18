@@ -26,7 +26,7 @@ use gpui_kit::*;
 
 use crate::audio::Audio;
 use crate::game::{Cell, Difficulty, Game, GameResult, GuessResult, HintResult, MatchOutcome};
-use crate::settings::{Rect, Settings, ThemeChoice, WindowFrame};
+use crate::settings::{Rect, SavedMatch, Settings, ThemeChoice, WindowFrame};
 use crate::stats::{DifficultyStats, Session, Stats};
 use crate::words::Pack;
 use gallows::gallows;
@@ -867,6 +867,44 @@ fn load_words(game: &mut Game, contents: std::io::Result<String>) -> LoadOutcome
     LoadOutcome::Loaded(charge)
 }
 
+/// The match to open the window on: the one the last run left behind if it is
+/// still playable, and a fresh one otherwise.
+///
+/// A [`Game`] and a [`Session`] rather than either alone, because the match
+/// score is not in the game: it lives in the session, it is saved beside the
+/// match, and restoring one without the other gives you back the right word
+/// under a score that has forgotten the six words before it.
+///
+/// A saved match that [`Game::resume`] refuses costs exactly one fresh deal —
+/// the same never-fail-loudly fallback [`Settings`] applies to every other key
+/// it cannot read. The lifetime tally is picked up either way, because it is a
+/// separate key and it is nobody's business but its own.
+fn resume_or_start(settings: &Settings) -> (Game, Session) {
+    let stats = settings.stats.clone();
+    let resumed = settings.in_flight.clone().and_then(|saved| {
+        let match_points = saved.match_points;
+        Some((Game::resume(saved.snapshot())?, match_points))
+    });
+
+    match resumed {
+        Some((game, match_points)) => (game, Session::resume(stats, match_points)),
+        None => (
+            Game::new(settings.difficulty.unwrap_or_default()),
+            Session::new(stats),
+        ),
+    }
+}
+
+/// The match in flight in the form the settings file stores, or `None` when
+/// there is nothing to come back to.
+///
+/// The way back out of [`resume_or_start`], and the pair to it: the game says
+/// what is worth saving ([`Game::snapshot`] returns `None` for a match that is
+/// over) and the session adds the one number the game does not keep.
+fn save_match(game: &Game, session: &Session) -> Option<SavedMatch> {
+    Some(SavedMatch::new(game.snapshot()?, session.match_points()))
+}
+
 /// What the floating notification says after a list loads.
 ///
 /// A pack bigger than a match is the normal case now, and "loaded 200 words"
@@ -981,7 +1019,7 @@ pub struct HangmanView {
 impl HangmanView {
     /// Build the view from the settings the last run left behind, which
     /// `main.rs` has already used to pick the theme and the window's bounds.
-    pub fn new(settings: Settings, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(mut settings: Settings, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The window's own geometry is the one setting with no moment of
         // change to save on: a drag or a resize reports every intermediate
         // pixel, so writing there would mean a file write per frame. Its
@@ -998,20 +1036,49 @@ impl HangmanView {
             true
         });
 
+        // The word you were on, the pool behind it and the match's score, if
+        // the last run left a match still running and the file still describes
+        // a playable one. Otherwise a fresh match on the difficulty last
+        // picked, exactly as every launch used to start.
+        let (game, session) = resume_or_start(&settings);
+        // Whatever was in the file, the mirror now says what is actually on the
+        // board: a saved match that was refused must not survive in the file to
+        // be written back out by the next theme toggle.
+        settings.in_flight = save_match(&game, &session);
+
         Self {
-            game: Game::new(settings.difficulty.unwrap_or_default()),
+            game,
             notice: None,
             clue_shown: false,
             last_guess: None,
             focus_handle: cx.focus_handle(),
             audio: Audio::new(),
             // The streak and the lifetime totals pick up exactly where the last
-            // run left them; the match score starts at zero, because the match
-            // on screen has only just been dealt.
-            session: Session::new(settings.stats.clone()),
+            // run left them, as they always have; since roadmap item 11 the
+            // match on screen does too.
+            session,
             show_stats: false,
             settings,
         }
+    }
+
+    /// Mirror everything that outlives the launch back into the settings file.
+    ///
+    /// Every handler that changes the game or the score ends with this, which
+    /// is the same rule the rest of the file follows — written the moment it
+    /// changes rather than flushed at exit — applied to one more key. Doing it
+    /// per *guess* rather than per word is what closes the hole roadmap item 11
+    /// is about: a save that only happened on a clean close would still hand a
+    /// free reroll to anyone who killed the process mid-word.
+    ///
+    /// The theme, the difficulty and the window's geometry are not in here
+    /// because they are not derived from anything — their own handlers set them
+    /// and save. These two are mirrors of the session and the game, so they are
+    /// re-read rather than tracked.
+    fn persist(&mut self) {
+        self.settings.stats = self.session.stats().clone();
+        self.settings.in_flight = save_match(&self.game, &self.session);
+        self.settings.save();
     }
 
     // ---------------------------------------------------------------- actions
@@ -1025,7 +1092,8 @@ impl HangmanView {
         // Only a guess that changed something is worth animating. A duplicate
         // or an invalid character leaves the previous guess's letter in place,
         // whose animations have long since finished, so nothing replays.
-        if matches!(outcome.result, GuessResult::Correct | GuessResult::Wrong) {
+        let landed = matches!(outcome.result, GuessResult::Correct | GuessResult::Wrong);
+        if landed {
             self.last_guess = Some(letter.to_ascii_uppercase());
         }
 
@@ -1051,6 +1119,13 @@ impl HangmanView {
             },
         };
 
+        // The same two results, for the same reason one step further on: a
+        // duplicate or an invalid character left the game exactly as it was,
+        // so writing it out again would be a file write per stray keypress.
+        // Only the notice moved, and a notice is not saved.
+        if landed {
+            self.persist();
+        }
         // GPUI does not diff state: a mutated view is only redrawn if it says so.
         cx.notify();
     }
@@ -1066,6 +1141,7 @@ impl HangmanView {
         // A word given up on is a word lost: no points, and the streak ends.
         self.record(Some(GameResult::Lost), match_);
         self.notice = Some(Notice::bad(GAVE_UP));
+        self.persist();
         cx.notify();
     }
 
@@ -1102,6 +1178,7 @@ impl HangmanView {
             }
             None => Some(Notice::good(format!("{HINT_GIVEN} {letter}."))),
         };
+        self.persist();
         cx.notify();
     }
 
@@ -1133,7 +1210,14 @@ impl HangmanView {
     }
 
     /// Put a finished word — and, when it was the last of the match, the match
-    /// — on the scoreboard, then write the new lifetime tally to disk.
+    /// — on the scoreboard.
+    ///
+    /// Writing the result out is [`HangmanView::persist`]'s job rather than
+    /// this method's, and deliberately so since roadmap item 11: an ordinary
+    /// guess returns from here having recorded nothing at all, and an ordinary
+    /// guess still has to reach the disk. Leaving the save to the caller is
+    /// what makes "every handler that changed something saves" one rule
+    /// instead of two half-rules that disagree about the guesses in between.
     ///
     /// Returns what the word scored, which is 0 for anything but a win. Called
     /// with the `game`/`match_` fields of a [`crate::game::GuessOutcome`], so
@@ -1152,11 +1236,6 @@ impl HangmanView {
         if let Some(outcome) = match_ {
             self.session.record_match(difficulty, outcome);
         }
-
-        // The stats are only ever a mirror of the session, like every other
-        // setting: written the moment they change rather than at exit.
-        self.settings.stats = self.session.stats().clone();
-        self.settings.save();
         earned
     }
 
@@ -1209,8 +1288,7 @@ impl HangmanView {
     /// been answered.
     fn reset_stats(&mut self, cx: &mut Context<Self>) {
         self.session.reset_stats();
-        self.settings.stats = self.session.stats().clone();
-        self.settings.save();
+        self.persist();
         cx.notify();
     }
 
@@ -1231,6 +1309,7 @@ impl HangmanView {
             self.notice = None;
             self.last_guess = None;
             self.clue_shown = false;
+            self.persist();
             cx.notify();
         }
     }
@@ -1247,8 +1326,6 @@ impl HangmanView {
     fn record_abandoned(&mut self, charge: AbandonCharge) -> Notice {
         self.session
             .record_word(charge.difficulty, GameResult::Lost, 0);
-        self.settings.stats = self.session.stats().clone();
-        self.settings.save();
         let word = charge.word;
         Notice::bad(format!("Leaving {word} counts as a loss in my book."))
     }
@@ -1272,7 +1349,7 @@ impl HangmanView {
         self.last_guess = None;
         self.clue_shown = false;
         self.settings.difficulty = Some(difficulty);
-        self.settings.save();
+        self.persist();
         cx.notify();
     }
 
@@ -1365,6 +1442,7 @@ impl HangmanView {
                     loaded_summary(self.game.pack_words(), self.game.total_words()),
                     cx,
                 );
+                self.persist();
             }
             LoadOutcome::Failed => self.notice = Some(Notice::bad(FILE_ERROR)),
         }
@@ -2506,13 +2584,15 @@ mod tests {
         HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, LoadOutcome, RESET_NOTHING,
         SHAKE_DISTANCE, Shortcut, Stats, SwitchOutcome, WIN_REVEAL, can_show_clue, clue_tooltip,
         dialog_top_margin, guess_count, hint_tooltip, key_state, load_words, loaded_summary,
-        match_summary, percent, plural, points, reset_stats_summary, shake_offset, shortcut_legend,
-        subtitle, switch_difficulty, to_bounds, to_rect, word_being_abandoned,
+        match_summary, percent, plural, points, reset_stats_summary, resume_or_start, save_match,
+        shake_offset, shortcut_legend, subtitle, switch_difficulty, to_bounds, to_rect,
+        word_being_abandoned,
     };
     use crate::game::{Difficulty, Game, GameResult};
-    use crate::settings::Rect;
+    use crate::settings::{Rect, SavedMatch, Settings};
     use crate::stats::Session;
     use crate::words::Pack;
+    use crate::words::Word;
 
     /// How many cell indices the [`super::Reveal`] tests sweep. Both of them
     /// claim something about *every* letter of a word, so the bound has to sit
@@ -3482,5 +3562,123 @@ mod tests {
         let rect = to_rect(bounds);
 
         assert_eq!((rect.x, rect.y, rect.width, rect.height), (1., 2., 3., 4.));
+    }
+
+    // ----------------------------------- picking the match back up (item 11)
+
+    /// Settings holding a match in flight, exactly as the file would after a
+    /// few words of one.
+    fn settings_mid_match() -> Settings {
+        let mut game = Game::with_seed(Difficulty::Hard, 5);
+        game.guess('E');
+        let mut session = Session::new(stats(9210, 31, 9, 11));
+        session.record_word(Some(Difficulty::Hard), GameResult::Won, 4);
+
+        Settings {
+            difficulty: Some(Difficulty::Easy),
+            in_flight: save_match(&game, &session),
+            stats: session.stats().clone(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn a_saved_match_is_the_match_the_window_opens_on() {
+        let settings = settings_mid_match();
+        let saved = settings.in_flight.clone().expect("the match was in flight");
+
+        let (game, _) = resume_or_start(&settings);
+
+        assert_eq!(game.word(), saved.word.word);
+        assert_eq!(
+            game.guessed_letters().iter().collect::<String>(),
+            saved.guessed,
+            "the letter already guessed is still guessed"
+        );
+        // Hard, not the Easy the difficulty pill was left on: the match in
+        // hand outranks the difficulty last picked.
+        assert_eq!(game.difficulty(), Some(Difficulty::Hard));
+    }
+
+    #[test]
+    fn the_match_score_comes_back_with_the_match() {
+        let settings = settings_mid_match();
+
+        let (_, session) = resume_or_start(&settings);
+
+        assert_eq!(
+            session.match_points(),
+            settings.in_flight.expect("in flight").match_points
+        );
+        assert_ne!(session.match_points(), 0, "the fixture scored a word");
+        // And the lifetime tally is still its own key's business.
+        assert_eq!(session.stats(), &settings.stats);
+    }
+
+    #[test]
+    fn no_saved_match_deals_a_fresh_one_on_the_difficulty_last_picked() {
+        let settings = Settings {
+            difficulty: Some(Difficulty::Insane),
+            stats: stats(9210, 31, 9, 11),
+            ..Settings::default()
+        };
+
+        let (game, session) = resume_or_start(&settings);
+
+        assert_eq!(game.difficulty(), Some(Difficulty::Insane));
+        assert_eq!(game.word_number(), 1);
+        assert_eq!(session.match_points(), 0);
+        assert_eq!(session.stats(), &settings.stats, "the tally still carries");
+    }
+
+    #[test]
+    fn a_saved_match_that_makes_no_sense_costs_only_the_match() {
+        let settings = Settings {
+            difficulty: Some(Difficulty::Insane),
+            stats: stats(9210, 31, 9, 11),
+            in_flight: Some(SavedMatch {
+                // A word with nothing guessable in it is the one thing
+                // `Game::resume` cannot work around.
+                word: Word::bare("1234"),
+                match_points: 9999,
+                ..settings_mid_match().in_flight.expect("in flight")
+            }),
+            ..Settings::default()
+        };
+
+        let (game, session) = resume_or_start(&settings);
+
+        assert_eq!(game.difficulty(), Some(Difficulty::Insane));
+        assert_eq!(session.match_points(), 0, "no match, no match score");
+        assert_eq!(session.stats(), &settings.stats);
+    }
+
+    #[test]
+    fn a_match_that_is_over_is_not_saved() {
+        let mut game = Game::from_words_with_seed(vec!["Laptop".into()], 2)
+            .expect("the fixture list has a word in it");
+        for letter in "LAPT".chars() {
+            game.guess(letter);
+        }
+        let session = Session::new(Stats::default());
+        assert!(
+            save_match(&game, &session).is_some(),
+            "still two letters to go"
+        );
+
+        game.guess('O');
+        game.guess('P');
+
+        assert!(game.is_match_over());
+        assert_eq!(save_match(&game, &session), None);
+    }
+
+    #[test]
+    fn what_is_saved_is_what_comes_back() {
+        let settings = settings_mid_match();
+
+        let (game, session) = resume_or_start(&settings);
+
+        assert_eq!(save_match(&game, &session), settings.in_flight);
     }
 }
