@@ -28,13 +28,13 @@ as the word list — a budget you can trade a guess out of for
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 65 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
-keeps the streak (30 more), [`src/settings.rs`](src/settings.rs) is the equally
-UI-free file that remembers your choices between launches (25 more),
+engine (with 85 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
+keeps the streak (31 more), [`src/settings.rs`](src/settings.rs) is the equally
+UI-free file that remembers your choices between launches (32 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
 (35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (16
-more), and [`src/ui/`](src/ui/) is everything GPUI — plus the sixty-three tests
-its own pure helpers have grown. That is 234 tests, and
+more), and [`src/ui/`](src/ui/) is everything GPUI — plus the eighty tests
+its own pure helpers have grown. That is 279 tests, and
 `cargo test` runs the lot in well under a second. The word packs and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -241,11 +241,11 @@ weight.
 | Give up on the current word (counts as a loss) | `Change Word` button, or `Ctrl+N` |
 | Load your own word list or pack | `Open word list…` button, or `Ctrl+O` |
 | Change difficulty (starts a fresh match, and changes the guess budget) | The Easy / Medium / Hard / Insane buttons |
-| Abandon the word you are on (counts as a loss) | Changing difficulty or loading a word list mid-word |
+| Abandon the word you are on (counts as a loss) | Changing difficulty or loading a word list mid-word — both ask first |
 | Replay the difficulty you just finished | The button already selected, once the match is over |
 | Show the lifetime stats | The `Stats` button in the toolbar |
 | Throw the lifetime stats away | `Reset stats`, inside the stats panel — it asks first |
-| Answer that question | `Reset` / `Keep them`, or Enter / Escape |
+| Answer any of those questions | The two buttons, or Enter / Escape |
 | Quit | Close the window |
 
 Nothing in that table has to be memorised: the strip along the bottom of the
@@ -277,6 +277,14 @@ and says so, exactly as `Change Word` does — otherwise the quickest way out of
 word you were about to fail would also be the one that cost nothing. A word you
 have not guessed a letter of yet is not in progress, so picking a difficulty
 before you start is free, and so is re-picking the one you are already on.
+
+Because those two are the only costly clicks you can make without saying so
+first, they **ask before they act**, and the question names what goes: the word,
+your streak if you have one, and the score of the match you are playing, which
+starts again from zero along with it. Neither asks when the click is free, so
+picking a difficulty at the start of a word, or re-picking the one you are on,
+still goes straight through. `Change Word` does not ask, because the button is
+already called `Give up on this word`.
 
 ## The guess budget
 
@@ -476,37 +484,15 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. Sixteen ideas have been agreed for where it goes next; twelve have
-shipped and four are open. The numbering is the order they were argued about
-rather than any committed order, and it stays as it is even as items land —
-commit messages, pull requests and `CLAUDE.md` all cite these by number.
+mirroring it. Thirteen ideas have been agreed for where it goes next and all
+thirteen have shipped; four more are on the table but not settled. The numbering
+is the order they were argued about rather than any committed order, and it
+stays as it is even as items land — commit messages, pull requests and
+`CLAUDE.md` all cite these by number.
 
 ### Still to do
 
-- **12. Decide which other moments deserve a dialog.** Item 10 answered whether
-  gpui-kit's dialogs are worth using; it did not answer where else to put
-  one, and the answer is not "everywhere destructive" — a game that stops to
-  ask four times an hour is worse than one that never asks. Four moments are
-  on the table, and they are not the same kind of moment.
-  Switching difficulty with a part-played word on the board is the closest
-  match to `Reset stats`: it charges a loss and ends the streak, and today it
-  is a tooltip you have to hover to read plus a notice afterwards telling you
-  what it already cost. Opening a word list does exactly the same thing for
-  exactly the same price, and has no warning at all — the file picker is the
-  only thing between the click and the loss, and it is not telling you the
-  word is at stake. `Change Word` is the doubtful one of the three: it is the
-  same loss, but the button says `Give up on this word` and the shortcut
-  strip repeats it, so the intent is already stated and a confirm risks being
-  the nag that teaches you to dismiss confirms. The fourth is not a question
-  at all: a word list that will not parse puts a red line under the board
-  while a list that *does* parse gets a floating notification — the louder
-  channel is on the happier event, which is backwards. That one probably wants
-  gpui-kit's notification rather than a dialog, and it is worth fixing
-  whichever way the other three go. Closing the window mid-word is
-  deliberately not on this list: item 11 has closed that hole by remembering
-  the word instead of asking about it, and the two were alternatives.
-
-The next four came out of the item 3 discussion and are **to be considered**
+These four came out of the item 3 discussion and are **to be considered**
 rather than agreed: each is worth doing only if the thing behind it turns out to
 matter.
 
@@ -623,7 +609,8 @@ matter.
   `Root` does not paint the dialog layer, and that layer sits inside the
   window's key context, so a letter typed at a dialog is guessed on the board
   behind it unless it is guarded. Its backdrop dim and its placement were the
-  two things worth overriding. Which *other* moments deserve one is item 12.
+  two things worth overriding. Which *other* moments deserve one was item 12,
+  and the answer was two of them.
 - **11. Resume the word you were on.** Closing the window mid-word was the
   last silent way out of a word you were losing: quitting and relaunching was a
   free reroll that kept your streak. The settings file now carries an
@@ -633,6 +620,27 @@ matter.
   it was left. Charging a loss on close was the alternative and was turned down:
   it taxes someone who quit for the night, and invisibly. See
   [Resuming the match you were in](#resuming-the-match-you-were-in).
+- **12. The other moments that deserve a dialog.** Item 10 answered whether
+  gpui-kit's dialogs are worth using; this one answered where else to put them,
+  and the answer was not "everywhere destructive" — a game that stops to ask
+  four times an hour is worse than one that never asks. Two of the four moments
+  on the table got a confirm. **Switching difficulty** and **opening a word
+  list** both throw a part-played word away for a loss and a broken streak, and
+  both now ask before they do it, naming the streak and the score of the match
+  you are playing as well as the word. Each asks only when the click would
+  really cost something: picking a difficulty before you have played a letter
+  goes straight through, and so does re-clicking the pill you are already on,
+  which never dealt a word in the first place. **`Change Word` was left
+  alone** — it is the same loss, but the button says `Give up on this word` and
+  the shortcut strip repeats it, so a dialog would only be asking you to agree
+  with yourself. The fourth moment was not a dialog question at all: a word list
+  that would not parse put a red line under the board while one that parsed got
+  a floating notification, which put the louder channel on the happier event.
+  Both outcomes now speak in the same place, and the failure is the one that
+  waits to be dismissed — the board does not change when a file fails, so the
+  message is the only sign the click did anything. Closing the window mid-word
+  is deliberately not on this list: item 11 closed that hole by remembering the
+  word instead of asking about it, and the two were alternatives.
 - **13. Make the abandon rule testable.** The two rules about walking out on a
   part-played word are both properties of the *order* of the statements that
   throw it away, so item 9's "a free function over a `&Game`" could not express

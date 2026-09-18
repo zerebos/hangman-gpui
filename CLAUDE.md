@@ -41,18 +41,20 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 268 tests and finishes in under a second, because **not one of
+`cargo test` is 279 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
 a guarantee — the view and all its gpui imports are in the same file as the
-tests, and its sixty-nine only reach free functions that take plain data and
+tests, and its eighty only reach free functions that take plain data and
 return plain data: `shortcut_legend` from item 7, `plural` / `points` /
 `reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
 `guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
 `word_being_abandoned` from item 9, `switch_difficulty` / `load_words` from
 item 13, `can_show_clue` / `clue_tooltip` / `loaded_summary` from item 3, and
-`resume_or_start` / `save_match` from item 11, and `percent` /
+`resume_or_start` / `save_match` from item 11, `abandon_summary` /
+`switch_needs_confirming` / `Abandon::title` / `Abandon::ok_text` from item 12,
+and `percent` /
 `shake_offset` / `Reveal::progress` / `Reveal::span` / `to_rect` / `to_bounds`
 alongside them. The item 13 pair is the one that takes
 a `&mut Game` and changes it rather than only reading — which is still inside
@@ -133,12 +135,15 @@ does.
   is over that click is the only way to replay the list, so it restarts as
   normal — don't collapse the two cases into one. The predicate behind that
   `false` is `would_switch_to`, and `has_word_to_lose` decides whether the word
-  a switch throws away has to be paid for. Nothing outside this module calls
-  `would_switch_to` since item 13 — `switch_difficulty` builds its `Dealt` out
-  of `set_difficulty`'s own `bool` instead, so a charge cannot be handed back
-  for a switch that did not happen — but it stays public and named: it is the
-  rule the refusal is *about*, and asking it before acting is still the right
-  move for any caller that needs the answer without committing to the switch.
+  a switch throws away has to be paid for. `switch_difficulty` does **not**
+  read `would_switch_to` — it builds its `Dealt` out of `set_difficulty`'s own
+  `bool` instead, so a charge cannot be handed back for a switch that did not
+  happen. The caller that does read it is `switch_needs_confirming` in
+  `src/ui/mod.rs`, item 12's gate in front of the confirm dialog, and it is
+  exactly the shape the method stayed public for: a caller that needs the
+  answer *without* committing to the switch. A confirm raised on a click
+  `set_difficulty` was going to refuse would be a question about something that
+  was never going to happen.
   `would_switch_to` and `has_word_to_lose` are the whole abandon rule between
   them — a word with a guess or a hint on it, walked away from by a difficulty
   switch or a new word list, is charged as a loss by the *view*
@@ -455,8 +460,10 @@ keeps its own. Real bug in this repo, fixed in commit `315e8ef`.
 
 ### 10. A dialog needs a layer rendered, a guard on the keyboard, and no `use super::*` in its tests
 
-`Reset stats` is the window's one gpui-kit dialog (`confirm_reset_stats` in
-`src/ui/mod.rs`), and it took four surprises to get there. The component itself
+`Reset stats` was the window's first gpui-kit dialog (`confirm_reset_stats` in
+`src/ui/mod.rs`), and it took four surprises to get there. Item 12 added two
+more — `confirm_abandon`, for the difficulty pill and the file picker — and
+everything below applies to all three. The component itself
 is good: `AlertDialog` takes both themes from `cx.theme()` with nothing
 hard-coded, traps Tab, blocks the mouse behind it, and gets Escape and Enter
 for free — `gpui_kit::init` reaches `gpui_base::dialog::init`, which binds
@@ -542,3 +549,57 @@ structural refusal to dismiss on a backdrop click. The margin is also the reason
 the placement is a fraction of the window rather than true centring: the
 dialog's own height is not known until it has been laid out, which is after the
 builder that would need it has run.
+
+### 11. A confirm is a gate in front of the work, and asking is a rule with a test
+
+Item 12 added the window's second and third dialogs (`confirm_abandon`), and
+four things about them are worth keeping rather than re-deriving.
+
+**When it asks is the feature; what it says is the wallpaper.** Both confirms
+are raised only when the click would really cost a word —
+`switch_needs_confirming` for the pills, `Game::has_word_to_lose` for the file
+picker. The pills are a `ButtonGroup`, so the *selected* one still fires and
+`switch_difficulty` refuses it: a confirm on that click would be a question
+about something that was never going to happen, which is how a player learns
+the dialog is noise. Both halves of that predicate have a test, and reversing
+either turns exactly one of them red.
+
+**The confirm calls the same method the unconfirmed path calls.** `on_ok` goes
+to `commit_abandon`, which calls `set_difficulty` or `prompt_for_word_list` —
+the ones that already existed. A confirm that re-implements the work is a
+confirm that drifts from it, and the abandon charge, the fresh match and the
+notice afterwards all stay where item 13 put them. The gate lives in the click
+handler (`on_difficulty_clicked`) rather than inside `set_difficulty` so the
+dialog's own OK cannot reach it and raise a second dialog.
+
+**`on_ok` defers its work with `window.defer`.** The dialog closes when that
+closure returns `true`, so anything done inline runs while the alert is still
+painted. `prompt_for_paths` asks the platform for a file-picker window straight
+away, and an OS dialog stacked on a closing alert is a look nobody chose.
+
+**The summary function is handed numbers, not a `&Game`.** `abandon_summary`
+takes the streak and the match score because it is read *while the word is
+still being played*, and `game.word()` is the answer — the same near-miss the
+pill tooltip had. Making the leak unwriteable beats remembering not to write
+it, and the test that fails if the signature grows a `&Game` says so.
+
+**The severity ladder is in the icon and the button variant.** `Reset stats` is
+the only irreversible thing in the window, so it keeps `IconName::TriangleAlert`
+in `cx.theme().red` and `ButtonVariant::Danger`. The two abandons cost one word,
+one streak and one match score, which is real but replayable, so they take
+`cx.theme().warning` and `ButtonVariant::Warning`. Three dialogs that all shout
+the same way say nothing about which one to read twice.
+
+**Paired outcomes belong in the same channel.** A word list that loads and one
+that will not now both go through `push_notification`
+(`Notification::success` / `Notification::error`) rather than one of each. The
+error is the one with `autohide(false)`: nothing on the board changes when a
+file fails, so the toast is the only evidence the click did anything, and the
+board's notice line is left alone because it belongs to the word — which the
+failed load did not touch. Both are pushed under one
+`Notification::id::<WordListNotice>()`, which makes a push replace the toast
+already under that key instead of stacking beside it: what is showing is always
+what the last `Open word list…` click did, and a successful load clears the
+error that was waiting to be dismissed. The ✕ on a toast is `invisible()` until
+the toast is hovered (`notification.rs:449-453`), so a sticky one that could
+only be dismissed by hand would be a worse idea than it looks.
