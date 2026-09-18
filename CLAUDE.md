@@ -241,16 +241,24 @@ does.
   the rules are `game.rs`'s. It is forgiving in the same two ways `stats` is
   (`in_flight_or_default`), and the view writes it on **every guess** rather
   than at exit, because a save that only happened on a clean close would still
-  hand a free reroll to anyone who killed the process mid-word. Two things are
-  deliberately not in it: the view's `clue_shown`, since a clue costs nothing
-  and re-reading one costs nothing either (revisit if item 17 ever prices it),
-  and any RNG seed — the word order is already decided by the stored pool, so
-  all a seed would still buy is which letter a hint picks. Like `game.rs` it
-  holds **no GPUI types** and is covered by 32 in-file tests; the conversions
-  to `ThemeMode` and `Bounds<Pixels>` live in `src/ui/mod.rs` instead. Nothing
-  in it may fail loudly: every read error falls back to `Settings::default()`,
-  and a malformed `stats` key falls back on its own rather than taking the file
-  with it.
+  hand a free reroll to anyone who killed the process mid-word. That needs no
+  debouncing and should not get any: a guess only writes when it *lands*, and
+  the duplicate check means a letter lands once, so the ceiling is the budget
+  plus the word's distinct letters — **measured at 21 writes per word on Easy
+  and 18–19 on the rest**, of a file measured at 2.6 KB with a full pool in it.
+  Mashing the keyboard cannot beat that bound, because the 27th key of a word
+  is necessarily a duplicate and the word itself dies once the budget is spent.
+  A timer would trade an exact bound for a window in which a kill loses the
+  guesses inside it, which is the one thing this key is here to prevent.
+  Two things are deliberately not in it: the view's `clue_shown`, since a clue
+  costs nothing and re-reading one costs nothing either (revisit if item 17
+  ever prices it), and any RNG seed — the word order is already decided by the
+  stored pool, so all a seed would still buy is which letter a hint picks.
+  Like `game.rs` it holds **no GPUI types** and is covered by 32 in-file
+  tests; the conversions to `ThemeMode` and `Bounds<Pixels>` live in
+  `src/ui/mod.rs` instead. Nothing in it may fail loudly: every read error
+  falls back to `Settings::default()`, and a malformed `stats` key falls back
+  on its own rather than taking the file with it.
 - `src/audio.rs` — **two** implementations of `Audio` with identical public
   signatures behind `#[cfg(feature = "sound")]` / `#[cfg(not(...))]`: a real one
   and a zero-sized no-op. That is what keeps `#[cfg]` out of every UI call site.
