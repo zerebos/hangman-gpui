@@ -1380,7 +1380,10 @@ impl HangmanView {
     /// — and the builder is an `Fn` re-run on every frame the dialog is on
     /// screen, so everything it captures has to be cloned rather than moved.
     fn confirm_reset_stats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let summary = reset_stats_summary(self.session.stats());
+        // A `SharedString` for the reason `confirm_abandon` states: this
+        // builder is re-run every frame too, and this dialog had the same
+        // per-frame `String` clone in it since item 10.
+        let summary: SharedString = reset_stats_summary(self.session.stats()).into();
         let view = cx.weak_entity();
 
         window.open_alert_dialog(cx, move |alert, window, cx| {
@@ -1423,7 +1426,14 @@ impl HangmanView {
     /// up, so the weak handle is cloned inside it rather than moved, and the
     /// callbacks are plain closures rather than `cx.listener`s.
     fn confirm_abandon(&mut self, kind: Abandon, window: &mut Window, cx: &mut Context<Self>) {
-        let summary = abandon_summary(self.session.stats().streak, self.session.match_points());
+        // A `SharedString` rather than the `String` the helper returns, for the
+        // reason `Notice` holds one: the builder below is re-run every frame the
+        // dialog is on screen and clones this each time, so a `String` here is a
+        // heap allocation per frame for the life of the dialog and a
+        // `SharedString` is an `Arc` bump. The conversion is once, here, rather
+        // than in `abandon_summary`, which stays plain data its tests can read.
+        let summary: SharedString =
+            abandon_summary(self.session.stats().streak, self.session.match_points()).into();
         let view = cx.weak_entity();
 
         window.open_alert_dialog(cx, move |alert, window, cx| {
@@ -3854,11 +3864,17 @@ mod tests {
 
     #[test]
     fn a_match_that_has_scored_nothing_is_not_described_as_a_loss() {
-        // Two words in and both lost: restarting the match takes nothing away,
-        // and may be a favour. Only the word is charged for, so only the word is
-        // mentioned.
-        assert_eq!(abandon_summary(0, 0), abandon_summary(0, 0));
-        assert!(!abandon_summary(2, 0).contains("match"));
+        // Two words in and both lost: the match has earned nothing, so
+        // restarting it takes nothing away and may well be a favour. Said in
+        // neither shape — with a streak and without — because a streak spans
+        // matches and can outlive one that has not scored yet.
+        for streak in [0, 3] {
+            let summary = abandon_summary(streak, 0);
+            assert!(
+                !summary.contains("match"),
+                "a match worth nothing was still described as a cost: {summary}",
+            );
+        }
     }
 
     #[test]
