@@ -484,13 +484,32 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. Thirteen ideas have been agreed for where it goes next and all
+mirroring it. Fourteen ideas have been agreed for where it goes next and
 thirteen have shipped; four more are on the table but not settled. The numbering
 is the order they were argued about rather than any committed order, and it
 stays as it is even as items land — commit messages, pull requests and
 `CLAUDE.md` all cite these by number.
 
 ### Still to do
+
+- **18. Say so when the game cannot save.** A settings file that cannot be
+  written — a read-only folder, a full disk, a file another program has locked
+  — prints a line to stderr and the game carries on, and a Windows build
+  launched by double-click has no stderr anyone will ever see. Since item 11
+  that happens on every guess that lands, so a player in that state gets
+  eighteen to twenty-one silent failures a word: no stats kept, no match to
+  resume, and nothing on screen to say why. It wants a notification rather than
+  a dialog — there is nothing to answer — and it wants to appear **once a
+  session**, not once a failed save; pushing it under a fixed
+  `Notification::id` the way the word-list notices are gives that for free.
+  Folded into the same item is its quieter cousin: a `stats` key the game
+  cannot read comes back as an empty tally with no message at all, not even on
+  stderr, which from the player's side looks exactly like the game throwing
+  their score away. The forgiveness is right and stays; what is missing is
+  saying so, once, at launch — and only when the key was **there** and
+  unreadable, so a first launch with nothing saved says nothing. Both came out
+  of item 12's sweep for moments that deserve a dialog, as the two places where
+  something is lost and the answer today is silence.
 
 These four came out of the item 3 discussion and are **to be considered**
 rather than agreed: each is worth doing only if the thing behind it turns out to
