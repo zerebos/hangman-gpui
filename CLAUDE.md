@@ -41,23 +41,18 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 268 tests and finishes in under a second, because **not one of
-them opens a window, needs an `App`, or touches the platform.** For the five
-GPUI-free modules that is guaranteed by the file: there is no gpui in them at
-all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
-a guarantee — the view and all its gpui imports are in the same file as the
-tests, and its sixty-nine only reach free functions that take plain data and
-return plain data: `shortcut_legend` from item 7, `plural` / `points` /
-`reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
-`guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
-`word_being_abandoned` from item 9, `switch_difficulty` / `load_words` from
-item 13, `can_show_clue` / `clue_tooltip` / `loaded_summary` from item 3, and
-`resume_or_start` / `save_match` from item 11, and `percent` /
-`shake_offset` / `Reveal::progress` / `Reveal::span` / `to_rect` / `to_bounds`
-alongside them. The item 13 pair is the one that takes
-a `&mut Game` and changes it rather than only reading — which is still inside
-the rule, because the rule is about needing no window, no `App` and no
-platform, and a `Game` needs none of the three.
+`cargo test` finishes in under a second, because **not one of the tests opens a
+window, needs an `App`, or touches the platform.** For the five GPUI-free
+modules that is guaranteed by the file: there is no gpui in them at all.
+`src/ui/mod.rs` is the exception and the discipline there is a choice, not a
+guarantee — the view and all its gpui imports are in the same file as the
+tests, and the tests only reach free functions that take plain data and return
+plain data. The `use super::{…}` list at the top of its test module is the
+roster of what they reach; read that rather than a list kept here, which would
+go stale with every item. Some of those take a `&mut Game` and change it rather
+than only reading — `switch_difficulty` / `load_words` from item 13 — which is
+still inside the rule, because the rule is about needing no window, no `App`
+and no platform, and a `Game` needs none of the three.
 Anything added to that module has to keep to the same rule by hand, importing
 what it tests by name rather than with a `use super::*` — see gotcha 10 for why
 that matters.
@@ -82,7 +77,7 @@ does.
 ## Layout
 
 - `src/words.rs` — the word-pack **file format**, and nothing else: `Word`,
-  `Pack`, the parsing and the sanitising, with 16 in-file tests. **No GPUI
+  `Pack`, the parsing and the sanitising, tested in-file. **No GPUI
   types**, like `game.rs`. It is also where the serde derives for a word live,
   so `game.rs` needs none — the same split `stats.rs` has for the score. Three
   rules in it are load-bearing and each has a test: a **bundled** pack that
@@ -106,8 +101,8 @@ does.
   `Pack::into_words` is now a one-liner over — is the cleanup, and
   `settings::SavedMatch` writes the word and the pool still to play into
   `settings.json`.
-- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by 85 unit
-  tests in-file. Keep it that way; UI work should not need to touch it. Since
+- `src/game.rs` — the rules. Deliberately **no GPUI types**, covered by its own
+  in-file tests. Keep it that way; UI work should not need to touch it. Since
   item 3 a match is `MATCH_WORDS` (10) words *drawn* from the pack by
   `draw_match` rather than the whole pack, so `total_words` is the match and
   `pack_words` is the pack — the two were the same number before it, and
@@ -133,12 +128,15 @@ does.
   is over that click is the only way to replay the list, so it restarts as
   normal — don't collapse the two cases into one. The predicate behind that
   `false` is `would_switch_to`, and `has_word_to_lose` decides whether the word
-  a switch throws away has to be paid for. Nothing outside this module calls
-  `would_switch_to` since item 13 — `switch_difficulty` builds its `Dealt` out
-  of `set_difficulty`'s own `bool` instead, so a charge cannot be handed back
-  for a switch that did not happen — but it stays public and named: it is the
-  rule the refusal is *about*, and asking it before acting is still the right
-  move for any caller that needs the answer without committing to the switch.
+  a switch throws away has to be paid for. `switch_difficulty` does **not**
+  read `would_switch_to` — it builds its `Dealt` out of `set_difficulty`'s own
+  `bool` instead, so a charge cannot be handed back for a switch that did not
+  happen. The caller that does read it is `switch_needs_confirming` in
+  `src/ui/mod.rs`, item 12's gate in front of the confirm dialog, and it is
+  exactly the shape the method stayed public for: a caller that needs the
+  answer *without* committing to the switch. A confirm raised on a click
+  `set_difficulty` was going to refuse would be a question about something that
+  was never going to happen.
   `would_switch_to` and `has_word_to_lose` are the whole abandon rule between
   them — a word with a guess or a hint on it, walked away from by a difficulty
   switch or a new word list, is charged as a loss by the *view*
@@ -152,7 +150,7 @@ does.
   free functions in `src/ui/mod.rs` instead of inline in the view:
   `switch_difficulty` and `load_words` take a `&mut Game`, do the reset, and
   hand back an `AbandonCharge` or nothing for the view to apply. That is what
-  made them testable, and the seven tests on them fail if either order is
+  made them testable, and the tests on them fail if either order is
   reversed — verified by reversing each and watching exactly one test go red.
   **The match in flight is a `Snapshot`, and this module decides what a
   plausible one is.** `Game::snapshot` hands back `None` for a match that is
@@ -201,7 +199,7 @@ does.
   reads off the game are: every helper that needed nothing but a `&Game` (and,
   for `match_summary`, a `&Session`) is a free function above the view rather
   than a `&self` method on it, so the in-file tests build no GPUI type and open
-  no window, exactly like the other four modules'. That is the shape anything
+  no window, exactly like the GPUI-free modules'. That is the shape anything
   pulled out of the view has to keep — `&self` is the signature to avoid,
   because it drags the whole view into the test. Neither the legend nor
   any toolbar tooltip spells a chord out: `Kbd::binding_for_action` and
@@ -213,15 +211,15 @@ does.
 - `src/gallows.rs` — the gallows *drawing*, as plain coordinates: polylines in
   a fixed 300×350 design box, which body part belongs to which stage, and the
   transform that fits the box into the rectangle the window gives it. **No GPUI
-  types**, like `game.rs`, with 35 in-file tests. Its partner `src/ui/gallows.rs`
+  types**, like `game.rs`, and tested in-file. Its partner `src/ui/gallows.rs`
   is the only thing that turns any of it into `PathBuilder` paths, and it holds
   the colours (from `cx.theme()`) and the draw-on animation. Keep the split:
-  geometry that a test can check belongs here, not in the 1,600-line view.
+  geometry that a test can check belongs here, not in the view.
   Nothing in either file assumes a budget of six wrong guesses — `parts_drawn`
   takes the budget as an argument, which is what let roadmap item 4 make the
   budget per-difficulty without touching either of them.
-- `src/stats.rs` — points, streaks and the lifetime tally, with 31 in-file
-  tests. **No GPUI types**, like `game.rs`, and it is where the serde derives
+- `src/stats.rs` — points, streaks and the lifetime tally, tested in-file.
+  **No GPUI types**, like `game.rs`, and it is where the serde derives
   for the score live so that `game.rs` needs none: `Difficulty` is mapped by
   hand there, exactly as `settings.rs` does it. Note what a custom pack can and
   cannot reach from here, because it is the answer to "should a pack be allowed
@@ -254,9 +252,9 @@ does.
   costs nothing and re-reading one costs nothing either (revisit if item 17
   ever prices it), and any RNG seed — the word order is already decided by the
   stored pool, so all a seed would still buy is which letter a hint picks.
-  Like `game.rs` it holds **no GPUI types** and is covered by 32 in-file
-  tests; the conversions to `ThemeMode` and `Bounds<Pixels>` live in
-  `src/ui/mod.rs` instead. Nothing in it may fail loudly: every read error
+  Like `game.rs` it holds **no GPUI types** and is tested in-file; the
+  conversions to `ThemeMode` and `Bounds<Pixels>` live in `src/ui/mod.rs`
+  instead. Nothing in it may fail loudly: every read error
   falls back to `Settings::default()`, and a malformed `stats` key falls back
   on its own rather than taking the file with it.
 - `src/audio.rs` — **two** implementations of `Audio` with identical public
@@ -455,8 +453,10 @@ keeps its own. Real bug in this repo, fixed in commit `315e8ef`.
 
 ### 10. A dialog needs a layer rendered, a guard on the keyboard, and no `use super::*` in its tests
 
-`Reset stats` is the window's one gpui-kit dialog (`confirm_reset_stats` in
-`src/ui/mod.rs`), and it took four surprises to get there. The component itself
+`Reset stats` was the window's first gpui-kit dialog (`confirm_reset_stats` in
+`src/ui/mod.rs`), and it took four surprises to get there. Item 12 added two
+more — `confirm_abandon`, for the difficulty pill and the file picker — and
+everything below applies to all three. The component itself
 is good: `AlertDialog` takes both themes from `cx.theme()` with nothing
 hard-coded, traps Tab, blocks the mouse behind it, and gets Escape and Enter
 for free — `gpui_kit::init` reaches `gpui_base::dialog::init`, which binds
@@ -542,3 +542,68 @@ structural refusal to dismiss on a backdrop click. The margin is also the reason
 the placement is a fraction of the window rather than true centring: the
 dialog's own height is not known until it has been laid out, which is after the
 builder that would need it has run.
+
+### 11. A confirm is a gate in front of the work, and asking is a rule with a test
+
+Item 12 added the window's second and third dialogs (`confirm_abandon`), and
+these are the things about them worth keeping rather than re-deriving.
+
+**When it asks is the feature; what it says is the wallpaper.** Both confirms
+are raised only when the click would really cost something —
+`abandon_needs_confirming` for the file picker, and `switch_needs_confirming`
+(that plus `would_switch_to`) for the pills. "Something" is a part-played word
+(`Game::has_word_to_lose`) **or a match that has scored and is not over**, and
+the second half is not optional: between words there is no word to lose, but
+both clicks still call `start_match`, which zeroes the match score and means
+the match is never booked. The first cut of item 12 gated on the word alone and
+waved exactly that through — six words won, `New Game` pressed, pill clicked.
+`match_points > 0` rather than "a word has been played", because a match that
+has earned nothing is no loss to restart, and not over because a finished
+match has already been booked. The pills are a `ButtonGroup`, so the *selected*
+one still fires and `switch_difficulty` refuses it: a confirm on that click
+would be a question about something that was never going to happen, which is
+how a player learns the dialog is noise. Every clause of both predicates has a
+test that goes red when the clause is dropped.
+
+**The confirm calls the same method the unconfirmed path calls.** `on_ok` goes
+to `commit_abandon`, which calls `set_difficulty` or `prompt_for_word_list` —
+the ones that already existed. A confirm that re-implements the work is a
+confirm that drifts from it, and the abandon charge, the fresh match and the
+notice afterwards all stay where item 13 put them. The gate lives in the click
+handler (`on_difficulty_clicked`) rather than inside `set_difficulty` so the
+dialog's own OK cannot reach it and raise a second dialog.
+
+**`on_ok` defers its work with `window.defer`.** The dialog closes when that
+closure returns `true`, so anything done inline runs while the alert is still
+painted. `prompt_for_paths` asks the platform for a file-picker window straight
+away, and an OS dialog stacked on a closing alert is a look nobody chose.
+
+**The summary function is handed plain values, not a `&Game`.**
+`abandon_summary` takes whether a word is at stake, the streak and the match
+score — the first because between words nothing is charged and the streak
+survives, so the sentence is the match clause alone — and it takes values
+because it is read *while the word is still being played*, and `game.word()` is
+the answer — the same near-miss the pill tooltip had. Making the leak
+unwriteable beats remembering not to write it, and the test that fails if the
+signature grows a `&Game` says so.
+
+**The severity ladder is in the icon and the button variant.** `Reset stats` is
+the only irreversible thing in the window, so it keeps `IconName::TriangleAlert`
+in `cx.theme().red` and `ButtonVariant::Danger`. The two abandons cost one word,
+one streak and one match score, which is real but replayable, so they take
+`cx.theme().warning` and `ButtonVariant::Warning`. Three dialogs that all shout
+the same way say nothing about which one to read twice.
+
+**Paired outcomes belong in the same channel.** A word list that loads and one
+that will not now both go through `push_notification`
+(`Notification::success` / `Notification::error`) rather than one of each. The
+error is the one with `autohide(false)`: nothing on the board changes when a
+file fails, so the toast is the only evidence the click did anything, and the
+board's notice line is left alone because it belongs to the word — which the
+failed load did not touch. Both are pushed under one
+`Notification::id::<WordListNotice>()`, which makes a push replace the toast
+already under that key instead of stacking beside it: what is showing is always
+what the last `Open word list…` click did, and a successful load clears the
+error that was waiting to be dismissed. The ✕ on a toast is `invisible()` until
+the toast is hovered (`notification.rs:449-453`), so a sticky one that could
+only be dismissed by hand would be a worse idea than it looks.

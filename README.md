@@ -28,14 +28,13 @@ as the word list — a budget you can trade a guess out of for
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 65 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
-keeps the streak (30 more), [`src/settings.rs`](src/settings.rs) is the equally
-UI-free file that remembers your choices between launches (25 more),
-[`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (16
-more), and [`src/ui/`](src/ui/) is everything GPUI — plus the sixty-three tests
-its own pure helpers have grown. That is 234 tests, and
-`cargo test` runs the lot in well under a second. The word packs and the
+engine, [`src/stats.rs`](src/stats.rs) scores the words and keeps the streak,
+[`src/settings.rs`](src/settings.rs) is the equally UI-free file that remembers
+your choices between launches, [`src/gallows.rs`](src/gallows.rs) is the
+gallows drawing as plain coordinates, [`src/words.rs`](src/words.rs) is the
+word-pack file format, and [`src/ui/`](src/ui/) is everything GPUI. Each carries
+its own tests — `src/ui/` for its pure helpers — and none of them opens a
+window, so `cargo test` runs the lot in well under a second. The word packs and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
 
@@ -49,8 +48,8 @@ cargo run
 
 `rust-toolchain.toml` pins the toolchain to `beta`, and you need it. GPUI ships
 to crates.io as `gpui-pre`, whose `src/profiler.rs` calls `std::hint::cold_path()`.
-That function is still unstable on current stable rustc (1.94.1), so a stable
-build fails with:
+That function is still unstable on stable rustc, so a stable build fails
+with:
 
 ```
 error[E0658]: use of unstable library feature `cold_path`
@@ -137,25 +136,6 @@ window's geometry when you close it — in the usual place for your platform:
     },
     "maximized": false
   },
-  "in_flight": {
-    "word": {
-      "word": "LAPTOP",
-      "category": "Technology",
-      "clue": "A computer you can close."
-    },
-    "guessed": "AOPT",
-    "wrong_guesses": 1,
-    "remaining": [
-      { "word": "BAGEL", "category": "Food" }
-    ],
-    "difficulty": "Medium",
-    "pack": "Medium",
-    "pack_words": 30,
-    "guess_budget": 8,
-    "words_won": 2,
-    "words_lost": 1,
-    "match_points": 520
-  },
   "stats": {
     "points": 9210,
     "words_won": 31,
@@ -175,6 +155,26 @@ window's geometry when you close it — in the usual place for your platform:
       "Insane": { "points": 7560, "words_won": 21, "words_lost": 9,
                   "matches_won": 2, "matches_lost": 1, "matches_tied": 0 }
     }
+  },
+  "in_flight": {
+    "word": {
+      "word": "LAPTOP",
+      "category": "Technology",
+      "clue": "A computer you can close."
+    },
+    "guessed": "AOPT",
+    "wrong_guesses": 1,
+    "result": null,
+    "remaining": [
+      { "word": "BAGEL", "category": "Food" }
+    ],
+    "difficulty": "Medium",
+    "pack": "Medium",
+    "pack_words": 30,
+    "guess_budget": 8,
+    "words_won": 2,
+    "words_lost": 1,
+    "match_points": 520
   }
 }
 ```
@@ -241,11 +241,11 @@ weight.
 | Give up on the current word (counts as a loss) | `Change Word` button, or `Ctrl+N` |
 | Load your own word list or pack | `Open word list…` button, or `Ctrl+O` |
 | Change difficulty (starts a fresh match, and changes the guess budget) | The Easy / Medium / Hard / Insane buttons |
-| Abandon the word you are on (counts as a loss) | Changing difficulty or loading a word list mid-word |
+| Abandon the word you are on (counts as a loss) | Changing difficulty or loading a word list mid-word — both ask first |
 | Replay the difficulty you just finished | The button already selected, once the match is over |
 | Show the lifetime stats | The `Stats` button in the toolbar |
 | Throw the lifetime stats away | `Reset stats`, inside the stats panel — it asks first |
-| Answer that question | `Reset` / `Keep them`, or Enter / Escape |
+| Answer any of those questions | The two buttons, or Enter / Escape |
 | Quit | Close the window |
 
 Nothing in that table has to be memorised: the strip along the bottom of the
@@ -277,6 +277,21 @@ and says so, exactly as `Change Word` does — otherwise the quickest way out of
 word you were about to fail would also be the one that cost nothing. A word you
 have not guessed a letter of yet is not in progress, so picking a difficulty
 before you start is free, and so is re-picking the one you are already on.
+
+Because those two are the only costly clicks you can make without saying so
+first, they **ask before they act**, and the question names what goes: the word,
+your streak if you have one, and the score of the match you are playing, which
+starts again from zero along with it. Neither asks when the click is free, so
+picking a difficulty at the start of a word, or re-picking the one you are on,
+still goes straight through. `Change Word` does not ask, because the button is
+already called `Give up on this word`.
+
+They also ask **between words**, once the match has scored something: the word
+you just finished is still on the board, or the next one is dealt and you have
+not typed a letter. No word is charged and your streak survives, but the switch
+still starts a fresh match, so the match score goes to zero and the match never
+gets counted as won — and the question says only that. A match that has scored
+nothing, or one that is already over and counted, goes straight through.
 
 ## The guess budget
 
@@ -418,9 +433,9 @@ difficulty change, across loading a new word list and across quitting the game.
 Only failing a word puts it back to zero — and `Change Word` is failing a word.
 The **best streak** is the high-water mark, and nothing but the `Reset stats`
 button lowers it — and that button asks before it does, naming the points, the
-words and the best streak you are about to lose. It is the only thing in the
-game that stops to ask, because it is the only thing you cannot play your way
-back out of.
+words and the best streak you are about to lose. It is the one question in the
+game asked in red, because it is the only thing you cannot play your way back
+out of.
 
 `SCORE` on the scoreboard is what the *match* on screen has earned so far; it
 starts again at zero when you pick a difficulty or load a word list, and is
@@ -476,37 +491,34 @@ per difficulty — is behind the `Stats` button in the toolbar and is
 ## Roadmap
 
 The port has caught up with the Java original, so from here the game stops
-mirroring it. Sixteen ideas have been agreed for where it goes next; twelve have
-shipped and four are open. The numbering is the order they were argued about
-rather than any committed order, and it stays as it is even as items land —
-commit messages, pull requests and `CLAUDE.md` all cite these by number.
+mirroring it. Fourteen ideas have been agreed for where it goes next and
+thirteen have shipped; four more are on the table but not settled. The numbering
+is the order they were argued about rather than any committed order, and it
+stays as it is even as items land — commit messages, pull requests and
+`CLAUDE.md` all cite these by number.
 
 ### Still to do
 
-- **12. Decide which other moments deserve a dialog.** Item 10 answered whether
-  gpui-kit's dialogs are worth using; it did not answer where else to put
-  one, and the answer is not "everywhere destructive" — a game that stops to
-  ask four times an hour is worse than one that never asks. Four moments are
-  on the table, and they are not the same kind of moment.
-  Switching difficulty with a part-played word on the board is the closest
-  match to `Reset stats`: it charges a loss and ends the streak, and today it
-  is a tooltip you have to hover to read plus a notice afterwards telling you
-  what it already cost. Opening a word list does exactly the same thing for
-  exactly the same price, and has no warning at all — the file picker is the
-  only thing between the click and the loss, and it is not telling you the
-  word is at stake. `Change Word` is the doubtful one of the three: it is the
-  same loss, but the button says `Give up on this word` and the shortcut
-  strip repeats it, so the intent is already stated and a confirm risks being
-  the nag that teaches you to dismiss confirms. The fourth is not a question
-  at all: a word list that will not parse puts a red line under the board
-  while a list that *does* parse gets a floating notification — the louder
-  channel is on the happier event, which is backwards. That one probably wants
-  gpui-kit's notification rather than a dialog, and it is worth fixing
-  whichever way the other three go. Closing the window mid-word is
-  deliberately not on this list: item 11 has closed that hole by remembering
-  the word instead of asking about it, and the two were alternatives.
+- **18. Say so when the game cannot save.** A settings file that cannot be
+  written — a read-only folder, a full disk, a file another program has locked
+  — prints a line to stderr and the game carries on, and a Windows build
+  launched by double-click has no stderr anyone will ever see. Since item 11
+  that happens on every guess that lands, so a player in that state gets
+  eighteen to twenty-one silent failures a word: no stats kept, no match to
+  resume, and nothing on screen to say why. It wants a notification rather than
+  a dialog — there is nothing to answer — and it wants to appear **once a
+  session**, not once a failed save; pushing it under a fixed
+  `Notification::id` the way the word-list notices are gives that for free.
+  Folded into the same item is its quieter cousin: a `stats` key the game
+  cannot read comes back as an empty tally with no message at all, not even on
+  stderr, which from the player's side looks exactly like the game throwing
+  their score away. The forgiveness is right and stays; what is missing is
+  saying so, once, at launch — and only when the key was **there** and
+  unreadable, so a first launch with nothing saved says nothing. Both came out
+  of item 12's sweep for moments that deserve a dialog, as the two places where
+  something is lost and the answer today is silence.
 
-The next four came out of the item 3 discussion and are **to be considered**
+These four came out of the item 3 discussion and are **to be considered**
 rather than agreed: each is worth doing only if the thing behind it turns out to
 matter.
 
@@ -623,7 +635,8 @@ matter.
   `Root` does not paint the dialog layer, and that layer sits inside the
   window's key context, so a letter typed at a dialog is guessed on the board
   behind it unless it is guarded. Its backdrop dim and its placement were the
-  two things worth overriding. Which *other* moments deserve one is item 12.
+  two things worth overriding. Which *other* moments deserve one was item 12,
+  and the answer was two of them.
 - **11. Resume the word you were on.** Closing the window mid-word was the
   last silent way out of a word you were losing: quitting and relaunching was a
   free reroll that kept your streak. The settings file now carries an
@@ -633,13 +646,36 @@ matter.
   it was left. Charging a loss on close was the alternative and was turned down:
   it taxes someone who quit for the night, and invisibly. See
   [Resuming the match you were in](#resuming-the-match-you-were-in).
+- **12. The other moments that deserve a dialog.** Item 10 answered whether
+  gpui-kit's dialogs are worth using; this one answered where else to put them,
+  and the answer was not "everywhere destructive" — a game that stops to ask
+  four times an hour is worse than one that never asks. Two of the four moments
+  on the table got a confirm. **Switching difficulty** and **opening a word
+  list** both throw a part-played word away for a loss and a broken streak, and
+  both now ask before they do it, naming the streak and the score of the match
+  you are playing as well as the word. Each asks only when the click would
+  really cost something: picking a difficulty before you have played a letter
+  goes straight through, and so does re-clicking the pill you are already on,
+  which never dealt a word in the first place. A match that has scored is
+  something too, so both also ask between words, when there is no word to lose
+  but the match score and the match win would still go. **`Change Word` was left
+  alone** — it is the same loss, but the button says `Give up on this word` and
+  the shortcut strip repeats it, so a dialog would only be asking you to agree
+  with yourself. The fourth moment was not a dialog question at all: a word list
+  that would not parse put a red line under the board while one that parsed got
+  a floating notification, which put the louder channel on the happier event.
+  Both outcomes now speak in the same place, and the failure is the one that
+  waits to be dismissed — the board does not change when a file fails, so the
+  message is the only sign the click did anything. Closing the window mid-word
+  is deliberately not on this list: item 11 closed that hole by remembering the
+  word instead of asking about it, and the two were alternatives.
 - **13. Make the abandon rule testable.** The two rules about walking out on a
   part-played word are both properties of the *order* of the statements that
   throw it away, so item 9's "a free function over a `&Game`" could not express
   either. They are two free functions over a `&mut Game` instead —
   `switch_difficulty` and `load_words` in [`src/ui/mod.rs`](src/ui/mod.rs) — that
   do the reset themselves and hand back an `AbandonCharge`, or nothing, for the
-  view to apply and announce. Seven tests drive the cases that matter: a
+  view to apply and announce. Tests drive the cases that matter: a
   part-played word is charged to the difficulty it came from, an untouched one
   is charged nothing, re-clicking the difficulty in play changes nothing at all,
   and a word list that will not open — or that opens with nothing playable in
