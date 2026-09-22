@@ -119,8 +119,9 @@ const RESET_FOREVER: &str = "go back to zero in every difficulty, along with the
 /// The two confirmations item 12 added, for the two clicks that throw a
 /// part-played word away: a difficulty pill, and the file picker.
 ///
-/// Both are asked *only* when the click would actually cost a word — see
-/// [`switch_needs_confirming`] — because a confirm on a click that costs
+/// Both are asked *only* when the click would actually cost something — a
+/// part-played word, or a match that has scored and is not over; see
+/// [`abandon_needs_confirming`] — because a confirm on a click that costs
 /// nothing is the nag that teaches people to dismiss confirms unread.
 ///
 /// `Change Word` is deliberately not one of them. It is the same loss, but the
@@ -876,18 +877,26 @@ impl Abandon {
 /// entirely at zero, because a match that has scored nothing is not something
 /// being taken away — and a match you are two losses into is one you may well
 /// be glad to see restarted.
-fn abandon_summary(streak: u32, match_points: u32) -> String {
-    let word = match streak {
-        0 => format!("{ABANDON_WORD}."),
-        streak => format!("{ABANDON_WORD}, ending your streak of {streak}."),
+///
+/// `word_at_stake` is false for the one confirm that has no word to charge:
+/// a scored match *between* words, where the next word has not had a letter
+/// played on it yet. Nothing is charged as a loss and the streak survives, so
+/// the sentence is the match clause alone — saying "this word counts as a
+/// loss" there would be the dialog lying about the price. With no word and no
+/// score there is nothing to say, and [`abandon_needs_confirming`] never asks.
+fn abandon_summary(word_at_stake: bool, streak: u32, match_points: u32) -> String {
+    let word = match (word_at_stake, streak) {
+        (false, _) => None,
+        (true, 0) => Some(format!("{ABANDON_WORD}.")),
+        (true, streak) => Some(format!("{ABANDON_WORD}, ending your streak of {streak}.")),
     };
-    match match_points {
-        0 => word,
-        scored => format!(
-            "{word} The match starts again from zero, losing its score of {}.",
-            points(scored)
-        ),
-    }
+    let score = (match_points > 0).then(|| {
+        format!(
+            "The match starts again from zero, losing its score of {}.",
+            points(match_points)
+        )
+    });
+    word.into_iter().chain(score).collect::<Vec<_>>().join(" ")
 }
 
 /// The key both word-list notifications are pushed under.
@@ -900,6 +909,29 @@ fn abandon_summary(streak: u32, match_points: u32) -> String {
 /// itself — the next load, successful or not, takes its place.
 struct WordListNotice;
 
+/// Whether throwing the match in hand away has to be confirmed first — for
+/// either click that does it, the file picker directly and a difficulty pill
+/// through [`switch_needs_confirming`].
+///
+/// Two things can be at stake, and either is enough:
+///
+/// - **A part-played word**, [`Game::has_word_to_lose`]: it is charged as a
+///   loss and ends the streak.
+/// - **A match that has scored and is not over.** Both clicks start a fresh
+///   match, so the match score goes to zero and the match is never booked as
+///   won or lost. That is true *between* words too — the last word resolved,
+///   or the next one dealt with no letter on it yet — where there is no word
+///   to lose and the first check alone would wave six won words' worth of
+///   match straight through. `match_points > 0` rather than "a word has been
+///   played" because a match that has earned nothing is no loss to restart,
+///   and a finished match is excluded because it has already been booked.
+///
+/// `match_points` is handed in rather than read off a [`Session`] so this stays
+/// a question about two plain values, like [`abandon_summary`].
+fn abandon_needs_confirming(game: &Game, match_points: u32) -> bool {
+    game.has_word_to_lose() || (match_points > 0 && !game.is_match_over())
+}
+
 /// Whether a click on `difficulty`'s pill has to be confirmed before it is
 /// acted on.
 ///
@@ -911,15 +943,15 @@ struct WordListNotice;
 /// is the worst kind of confirm: it teaches the player that the dialog is
 /// noise, on the one control where it is not.
 ///
-/// [`Game::has_word_to_lose`] is the other half, and it is why this is a
-/// question at all: picking a difficulty before you have played a letter costs
-/// nothing and must not stop to ask.
+/// [`abandon_needs_confirming`] is the other half, and it is why this is a
+/// question at all: picking a difficulty before you have played a letter of a
+/// match costs nothing and must not stop to ask.
 ///
 /// This is also the caller `CLAUDE.md` says `would_switch_to` stays public
 /// for — one that needs the answer without committing to the switch. Item 13
 /// left it with none outside `game.rs`; the confirm is it.
-fn switch_needs_confirming(game: &Game, difficulty: Difficulty) -> bool {
-    game.would_switch_to(difficulty) && game.has_word_to_lose()
+fn switch_needs_confirming(game: &Game, difficulty: Difficulty, match_points: u32) -> bool {
+    game.would_switch_to(difficulty) && abandon_needs_confirming(game, match_points)
 }
 
 /// The word that is about to be thrown away, if throwing it away costs
@@ -1432,8 +1464,12 @@ impl HangmanView {
         // heap allocation per frame for the life of the dialog and a
         // `SharedString` is an `Arc` bump. The conversion is once, here, rather
         // than in `abandon_summary`, which stays plain data its tests can read.
-        let summary: SharedString =
-            abandon_summary(self.session.stats().streak, self.session.match_points()).into();
+        let summary: SharedString = abandon_summary(
+            self.game.has_word_to_lose(),
+            self.session.stats().streak,
+            self.session.match_points(),
+        )
+        .into();
         let view = cx.weak_entity();
 
         window.open_alert_dialog(cx, move |alert, window, cx| {
@@ -1539,7 +1575,7 @@ impl HangmanView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if switch_needs_confirming(&self.game, difficulty) {
+        if switch_needs_confirming(&self.game, difficulty, self.session.match_points()) {
             self.confirm_abandon(Abandon::Switch(difficulty), window, cx);
             return;
         }
@@ -1616,7 +1652,7 @@ impl HangmanView {
         // warning after the work of finding a file. Cancelling the picker
         // still costs nothing either way — `load_words` is what charges, and
         // it never runs.
-        if self.game.has_word_to_lose() {
+        if abandon_needs_confirming(&self.game, self.session.match_points()) {
             self.confirm_abandon(Abandon::OpenList, window, cx);
             return;
         }
@@ -2844,11 +2880,11 @@ mod tests {
         AbandonCharge, CLUE_TOOLTIP, CLUE_TOOLTIP_NONE, CLUE_TOOLTIP_SHOWN, CUSTOM_LIST_SUBTITLE,
         DIALOG_TOP_FRACTION, GPUI_KIT_DIALOG_TOP_FRACTION, GUESS_REVEAL, HINT_TOOLTIP,
         HINT_TOOLTIP_LAST_GUESS, HINT_TOOLTIP_OVER, KeyState, LoadOutcome, RESET_NOTHING,
-        SHAKE_DISTANCE, Shortcut, Stats, SwitchOutcome, WIN_REVEAL, abandon_summary, can_show_clue,
-        clue_tooltip, dialog_top_margin, guess_count, hint_tooltip, key_state, load_words,
-        loaded_summary, match_summary, percent, plural, points, reset_stats_summary,
-        resume_or_start, save_match, shake_offset, shortcut_legend, subtitle, switch_difficulty,
-        switch_needs_confirming, to_bounds, to_rect, word_being_abandoned,
+        SHAKE_DISTANCE, Shortcut, Stats, SwitchOutcome, WIN_REVEAL, abandon_needs_confirming,
+        abandon_summary, can_show_clue, clue_tooltip, dialog_top_margin, guess_count, hint_tooltip,
+        key_state, load_words, loaded_summary, match_summary, percent, plural, points,
+        reset_stats_summary, resume_or_start, save_match, shake_offset, shortcut_legend, subtitle,
+        switch_difficulty, switch_needs_confirming, to_bounds, to_rect, word_being_abandoned,
     };
     use crate::game::{Difficulty, Game, GameResult};
     use crate::settings::{Rect, SavedMatch, Settings};
@@ -3747,7 +3783,7 @@ mod tests {
 
         for difficulty in Difficulty::ALL {
             assert!(
-                !switch_needs_confirming(&game, difficulty),
+                !switch_needs_confirming(&game, difficulty, 0),
                 "{difficulty:?} asked about an untouched word",
             );
         }
@@ -3763,7 +3799,7 @@ mod tests {
             guess_wrong(&mut game);
 
             assert!(
-                switch_needs_confirming(&game, to),
+                switch_needs_confirming(&game, to, 0),
                 "Easy -> {to:?} went through without asking",
             );
         }
@@ -3779,7 +3815,7 @@ mod tests {
         let mut game = Game::with_seed(Difficulty::Easy, 7);
         guess_wrong(&mut game);
 
-        assert!(!switch_needs_confirming(&game, Difficulty::Easy));
+        assert!(!switch_needs_confirming(&game, Difficulty::Easy, 0));
     }
 
     #[test]
@@ -3788,12 +3824,71 @@ mod tests {
         // for: the match is scored, or the player gave up on the word.
         let mut done = Game::with_seed(Difficulty::Easy, 7);
         lose_the_match(&mut done);
-        assert!(!switch_needs_confirming(&done, Difficulty::Easy));
+        assert!(!switch_needs_confirming(&done, Difficulty::Easy, 0));
 
         let mut given_up = Game::with_seed(Difficulty::Easy, 7);
         guess_wrong(&mut given_up);
         given_up.give_up();
-        assert!(!switch_needs_confirming(&given_up, Difficulty::Insane));
+        assert!(!switch_needs_confirming(&given_up, Difficulty::Insane, 0));
+    }
+
+    #[test]
+    fn a_scored_match_between_words_asks_before_it_is_thrown_away() {
+        // The gap the full-app survey found in the first cut of item 12: six
+        // words won, `New Game` pressed, no letter typed yet. There is no word
+        // to lose, but the switch still starts a fresh match, and the match
+        // score and the match win go with it. Both moments between words count
+        // — the word just resolved, and the next one dealt but untouched.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        win_the_word(&mut game);
+        assert!(!game.has_word_to_lose(), "the fixture has a word in play");
+        assert!(abandon_needs_confirming(&game, 150));
+        assert!(switch_needs_confirming(&game, Difficulty::Hard, 150));
+
+        assert!(game.new_game(), "the next word was not dealt");
+        assert!(
+            !game.has_word_to_lose(),
+            "the fresh word has a letter on it"
+        );
+        assert!(abandon_needs_confirming(&game, 150));
+        assert!(switch_needs_confirming(&game, Difficulty::Hard, 150));
+    }
+
+    #[test]
+    fn a_match_that_has_earned_nothing_is_free_to_throw_away_between_words() {
+        // The other side of that line: two words lost, nothing scored. A
+        // restart takes nothing away and may be a favour, so neither click
+        // stops to ask.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        lose_the_word(&mut game);
+        assert!(game.new_game(), "the next word was not dealt");
+
+        assert!(!abandon_needs_confirming(&game, 0));
+        assert!(!switch_needs_confirming(&game, Difficulty::Hard, 0));
+    }
+
+    #[test]
+    fn a_finished_match_has_already_been_booked_whatever_it_scored() {
+        // Once the last word is resolved the match is recorded as won, lost or
+        // tied, so a switch or a new list after it throws nothing away — even
+        // though the score is still showing on the board.
+        let mut game = Game::with_seed(Difficulty::Easy, 7);
+        lose_the_match(&mut game);
+
+        assert!(!abandon_needs_confirming(&game, 900));
+        assert!(!switch_needs_confirming(&game, Difficulty::Hard, 900));
+    }
+
+    #[test]
+    fn with_no_word_at_stake_the_confirmation_names_only_the_match() {
+        // Nothing is charged between words — `word_being_abandoned` finds no
+        // word, so the streak survives — and the dialog has to say exactly
+        // that much. "This word counts as a loss" here would be a lie about
+        // the price, and so would naming a streak that is not ending.
+        assert_eq!(
+            abandon_summary(false, 4, 520),
+            "The match starts again from zero, losing its score of 520 points.",
+        );
     }
 
     #[test]
@@ -3822,17 +3917,17 @@ mod tests {
         // Nothing banked and no streak, so there is one thing to say and the
         // sentence says only it. The alternative — a paragraph that mentions a
         // streak of 0 and a score of 0 — is how a confirm becomes wallpaper.
-        assert_eq!(abandon_summary(0, 0), "This word counts as a loss.");
+        assert_eq!(abandon_summary(true, 0, 0), "This word counts as a loss.");
     }
 
     #[test]
     fn a_streak_is_named_because_it_is_the_part_that_took_time() {
         assert_eq!(
-            abandon_summary(4, 0),
+            abandon_summary(true, 4, 0),
             "This word counts as a loss, ending your streak of 4.",
         );
         assert_eq!(
-            abandon_summary(1, 0),
+            abandon_summary(true, 1, 0),
             "This word counts as a loss, ending your streak of 1.",
         );
     }
@@ -3844,12 +3939,12 @@ mod tests {
         // the notice afterwards does not either — this sentence is the only
         // place the player is told.
         assert_eq!(
-            abandon_summary(0, 520),
+            abandon_summary(true, 0, 520),
             "This word counts as a loss. The match starts again from zero, \
              losing its score of 520 points.",
         );
         assert_eq!(
-            abandon_summary(3, 520),
+            abandon_summary(true, 3, 520),
             "This word counts as a loss, ending your streak of 3. The match \
              starts again from zero, losing its score of 520 points.",
         );
@@ -3859,7 +3954,7 @@ mod tests {
     fn one_point_is_still_one_point() {
         // The count is placed last in the sentence for this reason: every other
         // phrasing tried put a verb after it and had to agree with it.
-        assert!(abandon_summary(0, 1).ends_with("losing its score of 1 point."));
+        assert!(abandon_summary(true, 0, 1).ends_with("losing its score of 1 point."));
     }
 
     #[test]
@@ -3869,7 +3964,7 @@ mod tests {
         // neither shape — with a streak and without — because a streak spans
         // matches and can outlive one that has not scored yet.
         for streak in [0, 3] {
-            let summary = abandon_summary(streak, 0);
+            let summary = abandon_summary(true, streak, 0);
             assert!(
                 !summary.contains("match"),
                 "a match worth nothing was still described as a cost: {summary}",
@@ -3882,13 +3977,13 @@ mod tests {
         // The near-miss this guards against is real: an early version of the
         // pill tooltip interpolated `game.word()` and would have printed the
         // answer to anyone who hovered mid-guess. A dialog is read under exactly
-        // the same conditions. `abandon_summary` takes two numbers and no word,
-        // so the leak is not a rule to remember but a thing the signature will
-        // not let you write — and this is the test that fails if the signature
-        // grows a `&Game`.
+        // the same conditions. `abandon_summary` takes a flag and two numbers
+        // and no word, so the leak is not a rule to remember but a thing the
+        // signature will not let you write — and this is the test that fails
+        // if the signature grows a `&Game`.
         let mut game = Game::with_seed(Difficulty::Easy, 7);
         guess_wrong(&mut game);
-        let summary = abandon_summary(9, 990);
+        let summary = abandon_summary(true, 9, 990);
 
         assert!(
             !summary.contains(game.word()),

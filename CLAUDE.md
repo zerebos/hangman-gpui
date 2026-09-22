@@ -41,19 +41,20 @@ cargo check --all-targets
 cargo test
 ```
 
-`cargo test` is 279 tests and finishes in under a second, because **not one of
+`cargo test` is 283 tests and finishes in under a second, because **not one of
 them opens a window, needs an `App`, or touches the platform.** For the five
 GPUI-free modules that is guaranteed by the file: there is no gpui in them at
 all. `src/ui/mod.rs` is the exception and the discipline there is a choice, not
 a guarantee — the view and all its gpui imports are in the same file as the
-tests, and its eighty only reach free functions that take plain data and
+tests, and its eighty-four only reach free functions that take plain data and
 return plain data: `shortcut_legend` from item 7, `plural` / `points` /
 `reset_stats_summary` / `dialog_top_margin` from item 10, `subtitle` /
 `guess_count` / `key_state` / `hint_tooltip` / `match_summary` /
 `word_being_abandoned` from item 9, `switch_difficulty` / `load_words` from
 item 13, `can_show_clue` / `clue_tooltip` / `loaded_summary` from item 3, and
 `resume_or_start` / `save_match` from item 11, `abandon_summary` /
-`switch_needs_confirming` / `Abandon::title` / `Abandon::ok_text` from item 12,
+`abandon_needs_confirming` / `switch_needs_confirming` / `Abandon::title` /
+`Abandon::ok_text` from item 12,
 and `percent` /
 `shake_offset` / `Reveal::progress` / `Reveal::span` / `to_rect` / `to_bounds`
 alongside them. The item 13 pair is the one that takes
@@ -556,13 +557,21 @@ Item 12 added the window's second and third dialogs (`confirm_abandon`), and
 four things about them are worth keeping rather than re-deriving.
 
 **When it asks is the feature; what it says is the wallpaper.** Both confirms
-are raised only when the click would really cost a word —
-`switch_needs_confirming` for the pills, `Game::has_word_to_lose` for the file
-picker. The pills are a `ButtonGroup`, so the *selected* one still fires and
-`switch_difficulty` refuses it: a confirm on that click would be a question
-about something that was never going to happen, which is how a player learns
-the dialog is noise. Both halves of that predicate have a test, and reversing
-either turns exactly one of them red.
+are raised only when the click would really cost something —
+`abandon_needs_confirming` for the file picker, and `switch_needs_confirming`
+(that plus `would_switch_to`) for the pills. "Something" is a part-played word
+(`Game::has_word_to_lose`) **or a match that has scored and is not over**, and
+the second half is not optional: between words there is no word to lose, but
+both clicks still call `start_match`, which zeroes the match score and means
+the match is never booked. The first cut of item 12 gated on the word alone and
+waved exactly that through — six words won, `New Game` pressed, pill clicked.
+`match_points > 0` rather than "a word has been played", because a match that
+has earned nothing is no loss to restart, and not over because a finished
+match has already been booked. The pills are a `ButtonGroup`, so the *selected*
+one still fires and `switch_difficulty` refuses it: a confirm on that click
+would be a question about something that was never going to happen, which is
+how a player learns the dialog is noise. Every clause of both predicates has a
+test that goes red when the clause is dropped.
 
 **The confirm calls the same method the unconfirmed path calls.** `on_ok` goes
 to `commit_abandon`, which calls `set_difficulty` or `prompt_for_word_list` —
@@ -577,9 +586,12 @@ closure returns `true`, so anything done inline runs while the alert is still
 painted. `prompt_for_paths` asks the platform for a file-picker window straight
 away, and an OS dialog stacked on a closing alert is a look nobody chose.
 
-**The summary function is handed numbers, not a `&Game`.** `abandon_summary`
-takes the streak and the match score because it is read *while the word is
-still being played*, and `game.word()` is the answer — the same near-miss the
+**The summary function is handed plain values, not a `&Game`.**
+`abandon_summary` takes whether a word is at stake, the streak and the match
+score — the first because between words nothing is charged and the streak
+survives, so the sentence is the match clause alone — and it takes values
+because it is read *while the word is still being played*, and `game.word()` is
+the answer — the same near-miss the
 pill tooltip had. Making the leak unwriteable beats remembering not to write
 it, and the test that fails if the signature grows a `&Game` says so.
 

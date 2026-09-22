@@ -33,8 +33,8 @@ keeps the streak (31 more), [`src/settings.rs`](src/settings.rs) is the equally
 UI-free file that remembers your choices between launches (32 more),
 [`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
 (35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (16
-more), and [`src/ui/`](src/ui/) is everything GPUI — plus the eighty tests
-its own pure helpers have grown. That is 279 tests, and
+more), and [`src/ui/`](src/ui/) is everything GPUI — plus the eighty-four
+tests its own pure helpers have grown. That is 283 tests, and
 `cargo test` runs the lot in well under a second. The word packs and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
@@ -285,6 +285,13 @@ starts again from zero along with it. Neither asks when the click is free, so
 picking a difficulty at the start of a word, or re-picking the one you are on,
 still goes straight through. `Change Word` does not ask, because the button is
 already called `Give up on this word`.
+
+They also ask **between words**, once the match has scored something: the word
+you just finished is still on the board, or the next one is dealt and you have
+not typed a letter. No word is charged and your streak survives, but the switch
+still starts a fresh match, so the match score goes to zero and the match never
+gets counted as won — and the question says only that. A match that has scored
+nothing, or one that is already over and counted, goes straight through.
 
 ## The guess budget
 
@@ -649,7 +656,9 @@ matter.
   you are playing as well as the word. Each asks only when the click would
   really cost something: picking a difficulty before you have played a letter
   goes straight through, and so does re-clicking the pill you are already on,
-  which never dealt a word in the first place. **`Change Word` was left
+  which never dealt a word in the first place. A match that has scored is
+  something too, so both also ask between words, when there is no word to lose
+  but the match score and the match win would still go. **`Change Word` was left
   alone** — it is the same loss, but the button says `Give up on this word` and
   the shortcut strip repeats it, so a dialog would only be asking you to agree
   with yourself. The fourth moment was not a dialog question at all: a word list
