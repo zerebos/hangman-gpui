@@ -96,7 +96,8 @@ const CLUE_TOOLTIP_SHOWN: &str = "The clue is already on screen";
 const HINT_TOOLTIP_LAST_GUESS: &str = "No hint: it would cost the last guess you have";
 const HINT_TOOLTIP_OVER: &str = "No hint: this word is already finished";
 
-/// The `Reset stats` confirmation, which is the one dialog in the window.
+/// The `Reset stats` confirmation, the only one of the window's dialogs that
+/// guards something you cannot play your way back to.
 ///
 /// Its wording carries the whole point of asking: the button is one click from
 /// a tally built up over weeks, and `Reset` on its own does not say what goes.
@@ -1395,9 +1396,9 @@ impl HangmanView {
 
     /// Ask before throwing the lifetime tally away, then do it if told to.
     ///
-    /// The window's one dialog, and deliberately its most destructive button:
-    /// everything else here is either reversible or costs a single word, so
-    /// this is the only place an interruption earns its keep.
+    /// The window's most destructive button, and the one dialog in it drawn in
+    /// red: everything else here is either reversible or costs at most a word
+    /// and a match, which [`Self::confirm_abandon`] asks about a rung lower.
     ///
     /// gpui-kit's `AlertDialog` is a good fit for exactly that shape. It is
     /// the opinionated wrapper over `Dialog`: no close ✕, no dismissal by
@@ -1828,11 +1829,10 @@ impl HangmanView {
     fn render_toolbar(&self, cx: &Context<Self>) -> impl IntoElement {
         let current = self.game.difficulty();
         // What switching away would cost right now, or `None` when it is free.
-        // The warning goes on the pills themselves rather than into a dialog:
-        // gpui-kit ships a `Modal` and a `Dialog`, but this window has never
-        // used either (see `render_stats_panel`), and a tooltip is the idiom
-        // every other button in this toolbar already uses. You hover before you
-        // click, and the notice after the switch says it a second time.
+        // The warning goes on the pills themselves as well as into the confirm
+        // a click raises (`on_difficulty_clicked`): a tooltip is the idiom every
+        // other button in this toolbar already uses, you hover before you
+        // click, and the notice after the switch says it a third time.
         // It says "this word" and never the word itself, unlike the notice
         // afterwards: a tooltip is readable *during* play, and `game.word()` is
         // the answer.
@@ -3856,7 +3856,7 @@ mod tests {
 
     #[test]
     fn a_match_that_has_earned_nothing_is_free_to_throw_away_between_words() {
-        // The other side of that line: two words lost, nothing scored. A
+        // The other side of that line: a word lost, nothing scored. A
         // restart takes nothing away and may be a favour, so neither click
         // stops to ask.
         let mut game = Game::with_seed(Difficulty::Easy, 7);

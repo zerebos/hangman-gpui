@@ -28,14 +28,13 @@ as the word list — a budget you can trade a guess out of for
 ```
 
 The crate is a lib + bin: [`src/game.rs`](src/game.rs) is the pure, UI-free rule
-engine (with 85 unit tests), [`src/stats.rs`](src/stats.rs) scores the words and
-keeps the streak (31 more), [`src/settings.rs`](src/settings.rs) is the equally
-UI-free file that remembers your choices between launches (32 more),
-[`src/gallows.rs`](src/gallows.rs) is the gallows drawing as plain coordinates
-(35 more), [`src/words.rs`](src/words.rs) is the word-pack file format (16
-more), and [`src/ui/`](src/ui/) is everything GPUI — plus the eighty-four
-tests its own pure helpers have grown. That is 283 tests, and
-`cargo test` runs the lot in well under a second. The word packs and the
+engine, [`src/stats.rs`](src/stats.rs) scores the words and keeps the streak,
+[`src/settings.rs`](src/settings.rs) is the equally UI-free file that remembers
+your choices between launches, [`src/gallows.rs`](src/gallows.rs) is the
+gallows drawing as plain coordinates, [`src/words.rs`](src/words.rs) is the
+word-pack file format, and [`src/ui/`](src/ui/) is everything GPUI. Each carries
+its own tests — `src/ui/` for its pure helpers — and none of them opens a
+window, so `cargo test` runs the lot in well under a second. The word packs and the
 two mp3 cues live in [`assets/`](assets/) and are compiled into the binary, so
 there is nothing to install next to the executable.
 
@@ -49,8 +48,8 @@ cargo run
 
 `rust-toolchain.toml` pins the toolchain to `beta`, and you need it. GPUI ships
 to crates.io as `gpui-pre`, whose `src/profiler.rs` calls `std::hint::cold_path()`.
-That function is still unstable on current stable rustc (1.94.1), so a stable
-build fails with:
+That function is still unstable on stable rustc, so a stable build fails
+with:
 
 ```
 error[E0658]: use of unstable library feature `cold_path`
@@ -137,25 +136,6 @@ window's geometry when you close it — in the usual place for your platform:
     },
     "maximized": false
   },
-  "in_flight": {
-    "word": {
-      "word": "LAPTOP",
-      "category": "Technology",
-      "clue": "A computer you can close."
-    },
-    "guessed": "AOPT",
-    "wrong_guesses": 1,
-    "remaining": [
-      { "word": "BAGEL", "category": "Food" }
-    ],
-    "difficulty": "Medium",
-    "pack": "Medium",
-    "pack_words": 30,
-    "guess_budget": 8,
-    "words_won": 2,
-    "words_lost": 1,
-    "match_points": 520
-  },
   "stats": {
     "points": 9210,
     "words_won": 31,
@@ -175,6 +155,26 @@ window's geometry when you close it — in the usual place for your platform:
       "Insane": { "points": 7560, "words_won": 21, "words_lost": 9,
                   "matches_won": 2, "matches_lost": 1, "matches_tied": 0 }
     }
+  },
+  "in_flight": {
+    "word": {
+      "word": "LAPTOP",
+      "category": "Technology",
+      "clue": "A computer you can close."
+    },
+    "guessed": "AOPT",
+    "wrong_guesses": 1,
+    "result": null,
+    "remaining": [
+      { "word": "BAGEL", "category": "Food" }
+    ],
+    "difficulty": "Medium",
+    "pack": "Medium",
+    "pack_words": 30,
+    "guess_budget": 8,
+    "words_won": 2,
+    "words_lost": 1,
+    "match_points": 520
   }
 }
 ```
@@ -433,9 +433,9 @@ difficulty change, across loading a new word list and across quitting the game.
 Only failing a word puts it back to zero — and `Change Word` is failing a word.
 The **best streak** is the high-water mark, and nothing but the `Reset stats`
 button lowers it — and that button asks before it does, naming the points, the
-words and the best streak you are about to lose. It is the only thing in the
-game that stops to ask, because it is the only thing you cannot play your way
-back out of.
+words and the best streak you are about to lose. It is the one question in the
+game asked in red, because it is the only thing you cannot play your way back
+out of.
 
 `SCORE` on the scoreboard is what the *match* on screen has earned so far; it
 starts again at zero when you pick a difficulty or load a word list, and is
@@ -675,7 +675,7 @@ matter.
   either. They are two free functions over a `&mut Game` instead —
   `switch_difficulty` and `load_words` in [`src/ui/mod.rs`](src/ui/mod.rs) — that
   do the reset themselves and hand back an `AbandonCharge`, or nothing, for the
-  view to apply and announce. Seven tests drive the cases that matter: a
+  view to apply and announce. Tests drive the cases that matter: a
   part-played word is charged to the difficulty it came from, an untouched one
   is charged nothing, re-clicking the difficulty in play changes nothing at all,
   and a word list that will not open — or that opens with nothing playable in
